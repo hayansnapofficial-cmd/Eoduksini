@@ -1,0 +1,4 @@
+const $=id=>document.getElementById(id),number=new Intl.NumberFormat('ko-KR');
+async function load(){try{const response=await fetch('/api/admin/summary');if(!response.ok)throw new Error();const data=await response.json();$('users').textContent=number.format(data.total_users);$('active').textContent=number.format(data.active_subscriptions);$('conversion').textContent=data.total_users?`${Math.round(data.active_subscriptions/data.total_users*100)}%`:'0%';
+  const list=$('subscription-list');for(const [status,count] of Object.entries(data.subscription_counts)){const row=document.createElement('div'),label=document.createElement('span'),value=document.createElement('strong');label.textContent=status.toUpperCase();value.textContent=number.format(count);row.append(label,value);list.append(row)}if(!Object.keys(data.subscription_counts).length)$('admin-message').textContent='아직 가입한 회원이 없습니다.';
+}catch{$('admin-message').textContent='관리자 정보를 불러오지 못했습니다.'}}load();

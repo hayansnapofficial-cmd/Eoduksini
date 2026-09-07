@@ -23,7 +23,9 @@ npm run build
 npm run studio -- --state-root /absolute/path/to/controller-state
 ```
 
-Studio는 `http://127.0.0.1:4317`에서만 대기하며 Controller 상태, 작업 시도, Semantic 충돌·불확실성, M3 계측·경제성 집계를 표시합니다. 브라우저에 전체 저널이나 명령·환경·저장소 경로를 전달하지 않으며 실행·승인·복구 API도 제공하지 않습니다. 경로 없이 `npm run studio`를 실행하면 연결 전 화면을 미리 볼 수 있습니다. 포트는 `--port 4318`처럼 바꿀 수 있습니다.
+Studio는 `http://127.0.0.1:4317`에서만 대기하며 Controller 상태, 작업 시도, Semantic 충돌·불확실성, M3 계측·경제성 집계를 표시합니다. 공개 웹과 GitHub 로그인·Stripe 구독·내 계정·관리자 대시보드를 함께 제공하며, 활성 구독이 확인된 사용자만 Studio에 들어갈 수 있습니다. 인증과 결제 설정은 [웹 접근 설정](docs/WEB-ACCESS.md)을 따릅니다.
+
+브라우저에 전체 저널이나 명령·환경·저장소 경로를 전달하지 않으며 실행·승인·복구 API도 제공하지 않습니다. 인증 환경값 없이 `npm run studio`를 실행하면 공개 화면만 미리 볼 수 있습니다. 포트는 `--port 4318`처럼 바꿀 수 있습니다.
 
 프로젝트 등록과 읽기 전용 기준선 조사:
 
@@ -75,6 +77,6 @@ M3의 사후 증거 연결, fixture 검증과 `m2` 전력 센서 가용성 점�
 
 M3는 exact 결과 digest에 독립 검수와 명시적 사용자 채택 사건을 결합할 수 있습니다. 가격과 전력 근거는 권한 있는 관측이 제공되기 전까지 미관측 상태로 유지합니다.
 
-[소유권 경계](docs/BOUNDARY.md) · [로컬 Controller 운영](docs/LOCAL-CONTROLLER.md) · [Controller 계측](docs/CONTROLLER-METERING.md) · [V2 계획](docs/V2-DECISIONS.md) · [검증](docs/VERIFICATION.md)
+[소유권 경계](docs/BOUNDARY.md) · [웹 접근 설정](docs/WEB-ACCESS.md) · [로컬 Controller 운영](docs/LOCAL-CONTROLLER.md) · [Controller 계측](docs/CONTROLLER-METERING.md) · [V2 계획](docs/V2-DECISIONS.md) · [검증](docs/VERIFICATION.md)
 
 아직 오프라인 수렴 전체, DB 통합 승격, 실제 생산 프로젝트 실증까지 완료된 제품은 아닙니다.
