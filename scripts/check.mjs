@@ -7,8 +7,8 @@ import { projectContract } from '../core/contracts.mjs';
 import { adapterProjectPaths } from './adapter-projects.mjs';
 import { assertNoAdapterToCoreSchemaCoupling } from './core-boundary.mjs';
 function walk(dir) { return readdirSync(dir,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(join(dir,e.name)):[join(dir,e.name)]); }
-for(const file of [...walk('core'),...walk('tests'),...walk('scripts')]) {
-  if(file.endsWith('.mjs')) execFileSync(process.execPath,['--check',file],{stdio:'pipe'});
+for(const file of [...walk('core'),...walk('tests'),...walk('scripts'),...walk('studio')]) {
+  if(/\.(?:mjs|js)$/.test(file)) execFileSync(process.execPath,['--check',file],{stdio:'pipe'});
 }
 const ajv=new Ajv2020({strict:true}); addFormats(ajv);
 for(const file of walk('core/schemas').filter(p=>p.endsWith('.json'))) ajv.compile(JSON.parse(readFileSync(file,'utf8')));
@@ -25,7 +25,7 @@ const privateLineageNames=[
   ['photo','shift'].join(''),['photo','-','sift'].join(''),['wed','ing'].join(''),['wed','ding'].join(''),['uumm','123331'].join(''),
   String.fromCodePoint(47000,48727),String.fromCodePoint(48520,44032,49324,47532)
 ];
-for(const file of ['README.md',...walk('.github'),...walk('adapters'),...walk('docs'),...walk('core'),...walk('packages'),...walk('scripts')]) {
+for(const file of ['README.md',...walk('.github'),...walk('adapters'),...walk('docs'),...walk('core'),...walk('packages'),...walk('scripts'),...walk('studio')]) {
   if(!/\.(?:md|mjs|js|ts|json|ya?ml)$/i.test(file) && file!=='README.md') continue;
   const contents=readFileSync(file,'utf8').toLocaleLowerCase('en-US');
   if(privateLineageNames.some(name=>contents.includes(name))) throw new Error('PRIVATE_LINEAGE_DISCLOSURE: '+file);

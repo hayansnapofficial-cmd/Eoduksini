@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>어둑시니 Studio</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="sigil" aria-hidden="true">어</span><div><p>LOCAL CONTROL SURFACE</p><h1>어둑시니 <span>Studio</span></h1></div></div>
+    <div class="top-actions"><span id="connection" class="signal">연결 확인 중</span><span class="readonly">READ ONLY</span><button id="refresh" type="button">새로고침</button></div>
+  </header>
+  <main>
+    <section class="hero" aria-labelledby="controller-title">
+      <div><p class="eyebrow">CONTROLLER STATE</p><h2 id="controller-title">상태를 불러오는 중입니다</h2><p id="controller-detail" class="muted">로컬 저널의 검증된 스냅샷을 기다리고 있습니다.</p></div>
+      <div class="epoch"><span>EPOCH</span><strong id="epoch">—</strong></div>
+    </section>
+    <section class="metrics" aria-label="핵심 지표">
+      <article><span>전체 시도</span><strong id="attempt-count">—</strong><small id="status-breakdown">기록 없음</small></article>
+      <article><span>대기·복구</span><strong id="hold-count">—</strong><small id="hold-detail">안전 게이트</small></article>
+      <article><span>관측 토큰</span><strong id="token-count">—</strong><small id="token-detail">입력 + 출력</small></article>
+      <article><span>저널</span><strong id="journal-seq">—</strong><small id="journal-detail">검증된 이벤트</small></article>
+    </section>
+    <div class="grid">
+      <section class="panel attempts-panel">
+        <div class="panel-head"><div><p class="eyebrow">EXECUTION LEDGER</p><h3>작업 시도</h3></div><span id="attempt-badge" class="badge">0</span></div>
+        <div class="table-wrap"><table><thead><tr><th>시도</th><th>노드</th><th>실행</th><th>검수</th><th>채택</th><th>소요</th></tr></thead><tbody id="attempts"></tbody></table><div id="attempts-empty" class="empty">기록된 작업 시도가 없습니다.</div></div>
+      </section>
+      <aside class="panel semantic-panel">
+        <div class="panel-head"><div><p class="eyebrow">SEMANTIC FENCE</p><h3>충돌과 불확실성</h3></div><span id="semantic-badge" class="badge">0</span></div>
+        <div id="semantic-list" class="stack"></div><div id="semantic-empty" class="empty">검토가 필요한 의미 충돌이 없습니다.</div>
+      </aside>
+      <section class="panel economics-panel">
+        <div class="panel-head"><div><p class="eyebrow">METERING</p><h3>운영 계측</h3></div><span id="economics-state" class="badge">—</span></div>
+        <div class="economics-grid">
+          <div><span>관측 전력</span><strong id="energy">미측정</strong></div><div><span>전력 비용</span><strong id="energy-cost">미측정</strong></div>
+          <div><span>API 회피 추정</span><strong id="api-cost">미산정</strong></div><div><span>미완료 계측</span><strong id="incomplete">—</strong></div>
+        </div>
+      </section>
+      <section class="panel integrity-panel">
+        <div><p class="eyebrow">INTEGRITY</p><h3>읽기 전용 경계</h3></div>
+        <p>Studio는 실행·승인·복구 명령을 제공하지 않습니다. 모든 표시는 Controller가 검증한 저널에서 선별한 운영 정보입니다.</p>
+        <dl><div><dt>프로젝트</dt><dd id="project">—</dd></div><div><dt>노드</dt><dd id="node">—</dd></div><div><dt>마지막 갱신</dt><dd id="updated">—</dd></div></dl>
+      </section>
+    </div>
+  </main>
+  <footer>127.0.0.1 · EODUKSINI CONTROL PLANE</footer>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
