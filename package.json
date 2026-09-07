@@ -14,7 +14,8 @@
     "test": "node --test tests/*.test.mjs tests/reused/node/*.test.mjs && vitest run --config vitest.reuse.config.mjs",
     "test:primitives": "node --test tests/reuse-integration.test.mjs tests/reused/node/*.test.mjs && vitest run --config vitest.reuse.config.mjs",
     "check": "node scripts/check.mjs",
-    "build": "node scripts/build.mjs"
+    "build": "node scripts/build.mjs",
+    "studio": "node studio/server.mjs"
   },
   "dependencies": {
     "ajv": "8.20.0",

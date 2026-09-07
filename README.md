@@ -17,6 +17,14 @@ npm run check
 npm run build
 ```
 
+읽기 전용 로컬 운영 화면을 열려면 Controller state directory의 절대 경로를 지정합니다.
+
+```sh
+npm run studio -- --state-root /absolute/path/to/controller-state
+```
+
+Studio는 `http://127.0.0.1:4317`에서만 대기하며 Controller 상태, 작업 시도, Semantic 충돌·불확실성, M3 계측·경제성 집계를 표시합니다. 브라우저에 전체 저널이나 명령·환경·저장소 경로를 전달하지 않으며 실행·승인·복구 API도 제공하지 않습니다. 경로 없이 `npm run studio`를 실행하면 연결 전 화면을 미리 볼 수 있습니다. 포트는 `--port 4318`처럼 바꿀 수 있습니다.
+
 프로젝트 등록과 읽기 전용 기준선 조사:
 
 ```sh
@@ -49,6 +57,7 @@ core/
 packages/engine-primitives/  Core가 소유하는 범용 계획·검사 모듈
 adapters/
   demo/                 독립 fixture 어댑터
+studio/                 읽기 전용 로컬 운영 웹 화면
 docs/                   경계, V2 후속 계획, 검증 결과
 ```
 
