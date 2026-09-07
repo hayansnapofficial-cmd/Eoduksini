@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Eoduksini release-packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "release_id",
+    "base_sha",
+    "head_sha",
+    "tasks",
+    "review_verdicts",
+    "schema_status",
+    "services_changed",
+    "deploy_order",
+    "smoke_tests",
+    "rollback",
+    "owner_approval"
+  ],
+  "properties": {
+    "release_id": {
+      "type": "string"
+    },
+    "base_sha": {
+      "type": "string"
+    },
+    "head_sha": {
+      "type": "string"
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "review_verdicts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "schema_status": {
+      "type": "string"
+    },
+    "services_changed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "deploy_order": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "feature_flags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "smoke_tests": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rollback": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "owner_approval": {
+      "type": "boolean"
+    }
+  },
+  "$id": "urn:eoduksini:schema:release-packet:1"
+}

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:eoduksini:schema:task:2",
+  "title": "Eoduksini Task V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "task_id", "project_id", "harness_revision", "harness_revision_digest",
+    "task_graph_revision", "base_sha", "database_schema_head", "migration_head", "policy_digest",
+    "dependency_lock_digest", "authority", "milestone", "owner_role", "worktree_id", "goal",
+    "in_scope_paths", "out_of_scope_paths", "acceptance_criteria", "required_tests", "data_risk", "schema_change"
+  ],
+  "properties": {
+    "schema_version": {"const": 2},
+    "task_id": {"type": "string", "pattern": "^[A-Z][A-Z0-9]*-[A-Z0-9-]+$"},
+    "project_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "harness_revision": {"type": "integer", "minimum": 1},
+    "harness_revision_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "task_graph_revision": {"type": "integer", "minimum": 1},
+    "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "database_schema_head": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"},
+    "migration_head": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"},
+    "policy_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "dependency_lock_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["controller_approval_required", "local_process_execution", "model_execution", "remote_worker_execution", "git_publish", "database_mutation", "deployment", "production_mutation"],
+      "properties": {
+        "controller_approval_required": {"const": true},
+        "local_process_execution": {"const": true},
+        "model_execution": {"const": false},
+        "remote_worker_execution": {"const": false},
+        "git_publish": {"const": false},
+        "database_mutation": {"const": false},
+        "deployment": {"const": false},
+        "production_mutation": {"const": false}
+      }
+    },
+    "milestone": {"type": "string", "minLength": 1},
+    "owner_role": {"type": "string", "minLength": 1},
+    "worktree_id": {"type": "string", "minLength": 1},
+    "goal": {"type": "string", "minLength": 10},
+    "in_scope_paths": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "out_of_scope_paths": {"type": "array", "items": {"type": "string"}},
+    "dependencies": {"type": "array", "items": {"type": "string"}, "default": []},
+    "acceptance_criteria": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 3}},
+    "required_tests": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "failure_tests": {"type": "array", "items": {"type": "string"}},
+    "security_considerations": {"type": "array", "items": {"type": "string"}},
+    "data_risk": {"enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]},
+    "schema_change": {"type": "boolean"},
+    "shared_file_leases": {"type": "array", "items": {"type": "string"}},
+    "release_impact": {"enum": ["NONE", "APP_ONLY", "DB_COMPATIBLE", "DB_CUTOVER", "SERVICE_BOUNDARY", "INFRA"]}
+  }
+}

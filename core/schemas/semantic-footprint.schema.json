@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:eoduksini:schema:semantic-footprint:1",
+  "title": "Eoduksini Semantic Footprint",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "read_paths", "write_paths", "symbols", "api_routes", "request_contracts",
+    "response_contracts", "database_objects", "migration_objects", "environment_keys",
+    "generated_types", "runtime_services", "dependencies", "uncertainty"
+  ],
+  "properties": {
+    "read_paths": {"$ref": "#/$defs/stringSet"},
+    "write_paths": {"$ref": "#/$defs/stringSet"},
+    "symbols": {"$ref": "#/$defs/stringSet"},
+    "api_routes": {"$ref": "#/$defs/stringSet"},
+    "request_contracts": {"$ref": "#/$defs/stringSet"},
+    "response_contracts": {"$ref": "#/$defs/stringSet"},
+    "database_objects": {"$ref": "#/$defs/stringSet"},
+    "migration_objects": {"$ref": "#/$defs/stringSet"},
+    "environment_keys": {"$ref": "#/$defs/stringSet"},
+    "generated_types": {"$ref": "#/$defs/stringSet"},
+    "runtime_services": {"$ref": "#/$defs/stringSet"},
+    "dependencies": {"$ref": "#/$defs/stringSet"},
+    "uncertainty": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["subject", "reason", "confidence"],
+        "properties": {
+          "subject": {"type": "string", "minLength": 1, "maxLength": 512},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 512},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "stringSet": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 512}
+    }
+  }
+}

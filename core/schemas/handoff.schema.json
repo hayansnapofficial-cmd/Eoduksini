@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Eoduksini handoff",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "handoff_id",
+    "producer",
+    "consumer",
+    "task_id",
+    "base_sha",
+    "commit_sha",
+    "contract",
+    "verification",
+    "open_risks"
+  ],
+  "properties": {
+    "handoff_id": {
+      "type": "string"
+    },
+    "producer": {
+      "type": "string"
+    },
+    "consumer": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "base_sha": {
+      "type": "string"
+    },
+    "commit_sha": {
+      "type": "string"
+    },
+    "contract": {
+      "type": "object"
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "open_risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "acknowledged": {
+      "type": "boolean"
+    }
+  },
+  "$id": "urn:eoduksini:schema:handoff:1"
+}

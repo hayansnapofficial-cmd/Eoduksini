@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:eoduksini:schema:harness-revision:2",
+  "title": "Eoduksini immutable harness revision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "harness_id", "revision", "parent_revision", "project_id",
+    "activation_profile", "source_git_sha", "task_graph_revision", "architecture_digest",
+    "constraint_digest", "policy_digest", "evidence_policy_digest", "resource_policy_digest",
+    "database_policy_digest", "database_schema_head", "migration_head", "dependency_lock_digest",
+    "created_at", "created_by"
+  ],
+  "properties": {
+    "schema_version": {"const": 2},
+    "harness_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "revision": {"type": "integer", "minimum": 1},
+    "parent_revision": {"type": ["integer", "null"], "minimum": 1},
+    "project_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "activation_profile": {"enum": ["FOUNDATION_NOW", "POST_FIRST_PROJECT_CONVERGENCE_MVP", "SECOND_PROJECT_GENERALIZATION", "ENTERPRISE_HA"]},
+    "source_git_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "task_graph_revision": {"type": "integer", "minimum": 1},
+    "architecture_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "constraint_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "policy_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evidence_policy_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "resource_policy_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "database_policy_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "database_schema_head": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"},
+    "migration_head": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"},
+    "dependency_lock_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "created_by": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}
+  }
+}

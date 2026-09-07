@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "project_id": "demo",
+  "task_prefix": "DEMO-",
+  "repository": {
+    "url": "https://example.invalid/demo.git",
+    "reference_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "commands": {
+    "unit": {
+      "argv": [
+        "node",
+        "--test"
+      ],
+      "cwd": "."
+    }
+  },
+  "watch_paths": [
+    "package.json",
+    "package-lock.json"
+  ],
+  "schema_paths": [],
+  "schema_owner_role": "database-schema-owner",
+  "required_gates": {
+    "LOW": [
+      "worker",
+      "reviewer"
+    ],
+    "MEDIUM": [
+      "worker",
+      "reviewer",
+      "test-engineer",
+      "auditor"
+    ],
+    "HIGH": [
+      "explorer",
+      "worker",
+      "reviewer",
+      "security-reviewer",
+      "critic",
+      "auditor",
+      "release-controller"
+    ],
+    "CRITICAL": [
+      "explorer",
+      "architecture-governor",
+      "database-schema-owner-if-needed",
+      "worker",
+      "test-engineer",
+      "reviewer",
+      "security-reviewer",
+      "critic",
+      "auditor",
+      "release-controller",
+      "human-approval"
+    ]
+  },
+  "harness_paths": []
+}

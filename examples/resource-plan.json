@@ -1,0 +1,13 @@
+{
+  "request": { "cpu_threads": 2, "memory_gib": 4, "allow_burst": false },
+  "quota": {
+    "contractId": "CT-DEMO", "nodeId": "node-a",
+    "baseCpuThreads": 8, "maxCpuThreads": 16,
+    "baseMemoryGiB": 12, "maxMemoryGiB": 24,
+    "maxConcurrentTasks": 2, "burstExpiresAt": 2000, "updatedAt": 100
+  },
+  "contractUsage": { "cpuThreads": 0, "memoryGiB": 0, "activeTasks": 0 },
+  "nodeUsage": { "cpuThreads": 0, "memoryGiB": 0, "activeTasks": 0 },
+  "nodeCapacity": { "cpuThreads": 16, "memoryGiB": 32, "availableMemoryGiB": 24 },
+  "devices": [], "leasedGpuIds": [], "now": 1000
+}
