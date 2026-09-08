@@ -1,6 +1,14 @@
 # Eoduksini Web 접근 설정
 
-Eoduksini Web은 공개 화면, GitHub 로그인, 페이앱 정기결제, 구독 전용 Studio, 관리자 대시보드를 분리합니다. 브라우저의 복귀 URL은 권한 근거가 아닙니다. 페이앱 서버 통보의 판매자 정보, 연동 KEY/VALUE, 금액, 내부 요청 ID와 결제 상태를 모두 검증한 뒤에만 Studio 접근을 허용합니다.
+Eoduksini Web은 공개 화면, GitHub 로그인, 페이앱 정기결제, 구독 전용 Studio, 관리자 대시보드를 분리합니다. Core는 월 30 USD 기준, Pro는 월 50 USD 기준의 제품 계약입니다. 페이앱은 원화로 청구하므로 실제 고정 원화 청구액을 서버 환경에 별도로 명시하고 계정 화면에 함께 표시합니다. 브라우저의 복귀 URL은 권한 근거가 아닙니다. 페이앱 서버 통보의 판매자 정보, 연동 KEY/VALUE, 선택 플랜, 금액, 내부 요청 ID와 결제 상태를 모두 검증한 뒤에만 Studio 접근을 허용합니다.
+
+## 플랜과 권한
+
+- Core · 30 USD/월 기준: Controller 상태, 실행 원장, Semantic 충돌·불확실성, 읽기 전용 Studio
+- Pro · 50 USD/월 기준: Core 전체, 토큰·CPU·RAM 고급 계측, 비용·전력·독립 검수·실제 채택 리포트
+- Administrator: Pro 전체 기능, 결제 상태와 무관한 무제한 접근
+
+관리자 권한은 서버 실행 환경의 GitHub 숫자 ID allowlist에서만 결정합니다. 관리자 계정은 결제를 시작할 수 없고 활성 유료 구독 통계에도 포함하지 않습니다.
 
 ## 1. GitHub OAuth App
 
@@ -33,14 +41,15 @@ EODUKSINI_GITHUB_CLIENT_SECRET=...
 EODUKSINI_PAYAPP_USER_ID=...
 EODUKSINI_PAYAPP_LINK_KEY=...
 EODUKSINI_PAYAPP_LINK_VALUE=...
-EODUKSINI_PAYAPP_PRICE_KRW=9900
+EODUKSINI_PAYAPP_CORE_PRICE_KRW=...
+EODUKSINI_PAYAPP_PRO_PRICE_KRW=...
 EODUKSINI_PAYAPP_PLAN_NAME=Eoduksini Studio
 EODUKSINI_PAYAPP_CYCLE_DAY=90
 EODUKSINI_PAYAPP_EXPIRES_ON=2030-12-31
 EODUKSINI_ADMIN_GITHUB_IDS=12345678,87654321
 ```
 
-`EODUKSINI_PAYAPP_CYCLE_DAY`는 `1`~`31` 또는 말일을 뜻하는 `90`입니다. 만료일은 페이앱이 요구하는 `YYYY-MM-DD` 값이며 운영자가 상품 정책에 맞춰 갱신해야 합니다. 결제 요청 최소 금액은 페이앱 정책상 1,000원입니다.
+`EODUKSINI_PAYAPP_CORE_PRICE_KRW`와 `EODUKSINI_PAYAPP_PRO_PRICE_KRW`는 고객에게 실제 청구할 고정 원화 금액입니다. 둘 중 설정된 플랜만 결제를 시작할 수 있습니다. USD 기준 가격과 원화 결제액을 혼동하지 않도록 계정 화면에 둘 다 표시합니다. `EODUKSINI_PAYAPP_CYCLE_DAY`는 `1`~`31` 또는 말일을 뜻하는 `90`입니다. 만료일은 페이앱이 요구하는 `YYYY-MM-DD` 값이며 운영자가 상품 정책에 맞춰 갱신해야 합니다. 결제 요청 최소 금액은 페이앱 정책상 1,000원입니다.
 
 Controller 상태와 별도의 접근 데이터 디렉터리를 절대 경로로 전달합니다.
 
@@ -54,7 +63,7 @@ npm run studio -- --state-root /absolute/controller-state --access-root /absolut
 
 - `/`: 공개
 - `/account`: 로그인 필요
-- `/studio`, `/api/snapshot`: 로그인과 활성 구독 필요
+- `/studio`, `/api/snapshot`: 로그인과 활성 Core/Pro 구독 또는 관리자 권한 필요. 고급 계측·경제성 필드는 Pro와 관리자에게만 반환
 - `/admin`, `/api/admin/summary`: 로그인과 관리자 GitHub ID 필요
 - `/api/payapp/feedback`: 공개 HTTPS 서버 통보 전용, 폼 본문과 결제 계약 검증
 - 나머지 상태 변경 API: 동일 Origin과 `X-Eoduksini-Request: 1`을 함께 검사
