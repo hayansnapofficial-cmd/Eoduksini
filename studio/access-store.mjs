@@ -1,21 +1,32 @@
 import { mkdirSync, lstatSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { isPaidPlan, subscriptionEntitlement } from './plans.mjs';
 import { isProviderId } from './provider-catalog.mjs';
 
 const SUBSCRIPTION=new Set(['active','trialing','past_due','canceled','unpaid','incomplete','incomplete_expired','paused']);
 const PROVIDERS=new Set(['payapp','stripe']);
-const empty=()=>({schema_version:5,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{},provider_connections:{},models:{}});
+const empty=()=>({schema_version:6,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{},provider_connections:{},models:{},node_enrollments:{},nodes:{}});
 const validId=value=>typeof value==='string'&&/^[1-9][0-9]{0,31}$/.test(value);
 const validOrganizationId=value=>typeof value==='string'&&/^org-[1-9][0-9]{0,31}$/.test(value);
 const uuid='[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const validConnectionId=value=>typeof value==='string'&&new RegExp(`^pc-${uuid}$`).test(value);
 const validModelId=value=>typeof value==='string'&&new RegExp(`^model-${uuid}$`).test(value);
+const validEnrollmentId=value=>typeof value==='string'&&new RegExp(`^enrollment-${uuid}$`).test(value);
+const validNodeId=value=>typeof value==='string'&&new RegExp(`^node-${uuid}$`).test(value);
+const validHash=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
 const safeText=(value,max=256)=>typeof value==='string'&&value.length>0&&value.length<=max&&value.isWellFormed();
 const safeModelReference=value=>safeText(value,256)&&!/[\u0000-\u001f\u007f]/.test(value)&&value.trim()===value;
 const nullableText=(value,max=256)=>value===null||safeText(value,max);
 const check=(condition,reason)=>{if(!condition)throw new Error(reason)};
+const validateCapabilities=value=>check(value&&Object.keys(value).length===8&&safeText(value.agent_version,32)&&
+  ['aix','darwin','freebsd','linux','openbsd','sunos','win32'].includes(value.os)&&safeText(value.arch,32)&&
+  Number.isSafeInteger(value.cpu_logical)&&value.cpu_logical>=1&&value.cpu_logical<=4096&&Number.isSafeInteger(value.memory_bytes)&&
+  value.memory_bytes>=1&&value.memory_bytes<=Number.MAX_SAFE_INTEGER&&['observed','unavailable'].includes(value.gpu_status)&&
+  Array.isArray(value.gpu_devices)&&value.gpu_devices.length<=32&&value.gpu_devices.every(device=>device&&Object.keys(device).length===2&&
+    safeText(device.name,128)&&(device.memory_bytes===null||(Number.isSafeInteger(device.memory_bytes)&&device.memory_bytes>=0)))&&
+  Array.isArray(value.adapters)&&value.adapters.length<=32&&new Set(value.adapters).size===value.adapters.length&&value.adapters.every(isProviderId),
+  'INVALID_NODE_CAPABILITIES');
 
 function migrate(data) {
   if(data?.schema_version===1){const users={};
@@ -34,18 +45,21 @@ function migrate(data) {
       memberships[`${organization_id}:${user.github_id}`]={organization_id,github_id:user.github_id,role:'owner',created_at:now}}
     data={...data,schema_version:4,organizations,memberships}}
   if(data?.schema_version===4)data={...data,schema_version:5,provider_connections:{},models:{}};
+  if(data?.schema_version===5)data={...data,schema_version:6,node_enrollments:{},nodes:{}};
   return data;
 }
 
 function validate(input) {
   const data=migrate(input);
-  check(data&&Object.keys(data).length===8&&data.schema_version===5&&data.users&&typeof data.users==='object'&&!Array.isArray(data.users)&&
+  check(data&&Object.keys(data).length===10&&data.schema_version===6&&data.users&&typeof data.users==='object'&&!Array.isArray(data.users)&&
     Object.keys(data.users).length<=10_000&&data.billing_requests&&typeof data.billing_requests==='object'&&!Array.isArray(data.billing_requests)&&
     Object.keys(data.billing_requests).length<=10_000&&data.organizations&&typeof data.organizations==='object'&&!Array.isArray(data.organizations)&&
     Object.keys(data.organizations).length<=10_000&&data.memberships&&typeof data.memberships==='object'&&!Array.isArray(data.memberships)&&
     Object.keys(data.memberships).length<=50_000&&data.provider_connections&&typeof data.provider_connections==='object'&&!Array.isArray(data.provider_connections)&&
     Object.keys(data.provider_connections).length<=50_000&&data.models&&typeof data.models==='object'&&!Array.isArray(data.models)&&
-    Object.keys(data.models).length<=100_000,'INVALID_ACCESS_STORE');
+    Object.keys(data.models).length<=100_000&&data.node_enrollments&&typeof data.node_enrollments==='object'&&!Array.isArray(data.node_enrollments)&&
+    Object.keys(data.node_enrollments).length<=50_000&&data.nodes&&typeof data.nodes==='object'&&!Array.isArray(data.nodes)&&Object.keys(data.nodes).length<=50_000,
+    'INVALID_ACCESS_STORE');
   check(Array.isArray(data.processed_webhook_ids)&&data.processed_webhook_ids.length<=1000&&
     data.processed_webhook_ids.every(id=>safeText(id,256))&&new Set(data.processed_webhook_ids).size===data.processed_webhook_ids.length,
     'INVALID_ACCESS_STORE');
@@ -78,6 +92,20 @@ function validate(input) {
     Array.isArray(model.role_capabilities)&&model.role_capabilities.length<=8&&new Set(model.role_capabilities).size===model.role_capabilities.length&&
     model.role_capabilities.every(value=>['head','planner','coder','reviewer','validator','general'].includes(value))&&
     ['active','disabled'].includes(model.status)&&safeText(model.created_at,32)&&safeText(model.updated_at,32),'INVALID_ACCESS_STORE')}
+  for(const [id,enrollment] of Object.entries(data.node_enrollments))check(enrollment&&Object.keys(enrollment).length===9&&id===enrollment.enrollment_id&&
+    validEnrollmentId(id)&&validOrganizationId(enrollment.organization_id)&&data.organizations[enrollment.organization_id]&&safeText(enrollment.display_name,128)&&
+    validHash(enrollment.token_hash)&&['pending','consumed'].includes(enrollment.status)&&Number.isSafeInteger(enrollment.expires_at)&&enrollment.expires_at>=0&&
+    safeText(enrollment.created_at,32)&&nullableText(enrollment.consumed_at,32)&&(enrollment.node_id===null||validNodeId(enrollment.node_id)),
+    'INVALID_ACCESS_STORE');
+  for(const [id,node] of Object.entries(data.nodes))check(node&&Object.keys(node).length===16&&id===node.node_id&&validNodeId(id)&&
+    validOrganizationId(node.organization_id)&&data.organizations[node.organization_id]&&safeText(node.display_name,128)&&validHash(node.credential_hash)&&
+    ['active','revoked'].includes(node.status)&&safeText(node.agent_version,32)&&['aix','darwin','freebsd','linux','openbsd','sunos','win32'].includes(node.os)&&
+    safeText(node.arch,32)&&Number.isSafeInteger(node.cpu_logical)&&node.cpu_logical>=1&&node.cpu_logical<=4096&&
+    Number.isSafeInteger(node.memory_bytes)&&node.memory_bytes>=1&&node.memory_bytes<=Number.MAX_SAFE_INTEGER&&
+    ['observed','unavailable'].includes(node.gpu_status)&&Array.isArray(node.gpu_devices)&&node.gpu_devices.length<=32&&node.gpu_devices.every(device=>
+      device&&Object.keys(device).length===2&&safeText(device.name,128)&&(device.memory_bytes===null||(Number.isSafeInteger(device.memory_bytes)&&device.memory_bytes>=0)))&&
+    Array.isArray(node.adapters)&&node.adapters.length<=32&&new Set(node.adapters).size===node.adapters.length&&node.adapters.every(isProviderId)&&
+    nullableText(node.last_seen_at,32)&&safeText(node.created_at,32)&&safeText(node.updated_at,32),'INVALID_ACCESS_STORE');
   return structuredClone(data);
 }
 
@@ -92,7 +120,7 @@ export function createAccessStore(root) {
   const raw=()=>{check(lstatSync(file).size<=8*1024*1024,'ACCESS_STORE_TOO_LARGE');return JSON.parse(readFileSync(file,'utf8'))};
   const save=data=>{data=validate(data);const temporary=join(root,`.access-${randomUUID()}.tmp`);
     writeFileSync(temporary,JSON.stringify(data,null,2)+'\n',{encoding:'utf8',mode:0o600,flag:'wx'});renameSync(temporary,file)};
-  if(raw().schema_version!==5)save(migrate(raw()));
+  if(raw().schema_version!==6)save(migrate(raw()));
   const load=()=>validate(raw());let queue=Promise.resolve();
   const update=operation=>{const result=queue.then(()=>{const data=load(),value=operation(data);save(data);return value});queue=result.catch(()=>{});return result};
   return {
@@ -106,6 +134,29 @@ export function createAccessStore(root) {
     models(organizationId){const data=load();check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
       return Object.values(data.models).filter(value=>value.organization_id===organizationId).map(value=>structuredClone(value))
         .sort((left,right)=>left.created_at.localeCompare(right.created_at)||left.model_id.localeCompare(right.model_id))},
+    nodes(organizationId){const data=load();check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
+      return Object.values(data.nodes).filter(value=>value.organization_id===organizationId).map(({credential_hash:_,...value})=>structuredClone(value))
+        .sort((left,right)=>left.created_at.localeCompare(right.created_at)||left.node_id.localeCompare(right.node_id))},
+    createNodeEnrollment({organization_id,display_name,now=Date.now()}){return update(data=>{check(validOrganizationId(organization_id)&&
+      data.organizations[organization_id]&&safeText(display_name,128)&&display_name.trim()===display_name&&Number.isSafeInteger(now)&&now>=0,'INVALID_NODE_ENROLLMENT');
+      const enrollment_id=`enrollment-${randomUUID()}`,token=`enr_${randomBytes(32).toString('base64url')}`,created_at=new Date(now).toISOString();
+      data.node_enrollments[enrollment_id]={enrollment_id,organization_id,display_name,token_hash:createHash('sha256').update(token).digest('hex'),status:'pending',
+        expires_at:Math.floor(now/1000)+600,created_at,consumed_at:null,node_id:null};const {token_hash:_,...enrollment}=data.node_enrollments[enrollment_id];
+      return {token,enrollment:structuredClone(enrollment)}})},
+    enrollNode({token,capabilities,now=Date.now()}){return update(data=>{check(safeText(token,64)&&token.startsWith('enr_')&&Number.isSafeInteger(now)&&now>=0,
+      'INVALID_ENROLLMENT_TOKEN');const digest=createHash('sha256').update(token).digest('hex'),enrollment=Object.values(data.node_enrollments).find(value=>{
+        const left=Buffer.from(value.token_hash,'hex'),right=Buffer.from(digest,'hex');return left.length===right.length&&timingSafeEqual(left,right)});
+      check(enrollment&&enrollment.status==='pending'&&enrollment.expires_at>Math.floor(now/1000),'INVALID_ENROLLMENT_TOKEN');validateCapabilities(capabilities);
+      const node_id=`node-${randomUUID()}`,credential=`agt_${randomBytes(32).toString('base64url')}`,timestamp=new Date(now).toISOString();
+      data.nodes[node_id]={node_id,organization_id:enrollment.organization_id,display_name:enrollment.display_name,
+        credential_hash:createHash('sha256').update(credential).digest('hex'),status:'active',...structuredClone(capabilities),last_seen_at:timestamp,
+        created_at:timestamp,updated_at:timestamp};enrollment.status='consumed';enrollment.consumed_at=timestamp;enrollment.node_id=node_id;
+      const {credential_hash:_,...node}=data.nodes[node_id];return {credential,node:structuredClone(node)}})},
+    heartbeatNode({credential,capabilities,now=Date.now()}){return update(data=>{check(safeText(credential,64)&&credential.startsWith('agt_')&&
+      Number.isSafeInteger(now)&&now>=0,'INVALID_AGENT_CREDENTIAL');const digest=createHash('sha256').update(credential).digest('hex'),node=Object.values(data.nodes).find(value=>{
+        const left=Buffer.from(value.credential_hash,'hex'),right=Buffer.from(digest,'hex');return left.length===right.length&&timingSafeEqual(left,right)});
+      check(node&&node.status==='active','INVALID_AGENT_CREDENTIAL');validateCapabilities(capabilities);Object.assign(node,structuredClone(capabilities));
+      node.last_seen_at=new Date(now).toISOString();node.updated_at=node.last_seen_at;const {credential_hash:_,...publicNode}=node;return structuredClone(publicNode)})},
     createProviderConnection({organization_id,provider_id,display_name}){return update(data=>{check(validOrganizationId(organization_id)&&
       data.organizations[organization_id]&&isProviderId(provider_id)&&safeText(display_name,128)&&display_name.trim()===display_name,'INVALID_PROVIDER_CONNECTION');
       const existing=Object.values(data.provider_connections).find(value=>value.organization_id===organization_id&&value.provider_id===provider_id&&

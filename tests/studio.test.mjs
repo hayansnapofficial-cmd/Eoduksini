@@ -121,8 +121,8 @@ test('Access store migrates legacy Stripe-shaped records to provider-neutral bil
   writeFileSync(join(root,'access.json'),JSON.stringify(legacy));
   try {const store=createAccessStore(root),user=store.user('42');assert.equal(user.billing_provider,null);
     assert.equal(user.billing_subscription_id,null);assert.equal(user.plan_id,null);assert.equal(store.organizationsForUser('42')[0].organization_id,'org-42');
-    const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,5);
-    assert.deepEqual(migrated.provider_connections,{});assert.deepEqual(migrated.models,{});
+    const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,6);
+    assert.deepEqual(migrated.provider_connections,{});assert.deepEqual(migrated.models,{});assert.deepEqual(migrated.nodes,{});
   } finally {rmSync(parent,{recursive:true,force:true})}
 });
 
@@ -142,9 +142,35 @@ test('Access store upgrades the live v4 shape without changing organization reco
   const parent=mkdtempSync(join(tmpdir(),'eoduksini-access-v4-')),root=join(parent,'access');mkdirSync(root);
   const v4={schema_version:4,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{}};
   writeFileSync(join(root,'access.json'),JSON.stringify(v4));
-  try {createAccessStore(root);const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,5);
-    assert.deepEqual(migrated.provider_connections,{});assert.deepEqual(migrated.models,{})}
+  try {createAccessStore(root);const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,6);
+    assert.deepEqual(migrated.provider_connections,{});assert.deepEqual(migrated.models,{});assert.deepEqual(migrated.node_enrollments,{});assert.deepEqual(migrated.nodes,{})}
   finally {rmSync(parent,{recursive:true,force:true})}
+});
+
+test('Access store upgrades the deployed v5 shape with empty node collections',()=>{
+  const parent=mkdtempSync(join(tmpdir(),'eoduksini-access-v5-')),root=join(parent,'access');mkdirSync(root);
+  const v5={schema_version:5,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{},provider_connections:{},models:{}};
+  writeFileSync(join(root,'access.json'),JSON.stringify(v5));
+  try {createAccessStore(root);const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,6);
+    assert.deepEqual(migrated.node_enrollments,{});assert.deepEqual(migrated.nodes,{})}
+  finally {rmSync(parent,{recursive:true,force:true})}
+});
+
+test('Node enrollment is single use and heartbeat stores bounded capabilities without bearer credentials',async()=>{
+  const parent=mkdtempSync(join(tmpdir(),'eoduksini-node-enrollment-')),store=createAccessStore(join(parent,'access')),
+    capabilities={agent_version:'0.1.0',os:'linux',arch:'x64',cpu_logical:16,memory_bytes:34359738368,gpu_status:'unavailable',gpu_devices:[],adapters:['ollama']};
+  try {await store.upsertIdentity({github_id:'42',login:'owner',avatar_url:null});await store.upsertIdentity({github_id:'43',login:'other',avatar_url:null});
+    const issued=await store.createNodeEnrollment({organization_id:'org-42',display_name:'Build node',now:1000});assert.match(issued.token,/^enr_/);
+    let serialized=readFileSync(join(parent,'access','access.json'),'utf8');assert.equal(serialized.includes(issued.token),false);
+    await assert.rejects(()=>store.enrollNode({token:'enr_invalid',capabilities,now:2000}),/INVALID_ENROLLMENT_TOKEN/);
+    const enrolled=await store.enrollNode({token:issued.token,capabilities,now:2000});assert.match(enrolled.credential,/^agt_/);
+    assert.equal(enrolled.node.organization_id,'org-42');assert.equal(store.nodes('org-42').length,1);assert.equal(store.nodes('org-43').length,0);
+    await assert.rejects(()=>store.enrollNode({token:issued.token,capabilities,now:3000}),/INVALID_ENROLLMENT_TOKEN/);
+    await assert.rejects(()=>store.heartbeatNode({credential:'agt_invalid',capabilities,now:3000}),/INVALID_AGENT_CREDENTIAL/);
+    const heartbeat=await store.heartbeatNode({credential:enrolled.credential,capabilities:{...capabilities,cpu_logical:24},now:3000});
+    assert.equal(heartbeat.cpu_logical,24);assert.equal(heartbeat.last_seen_at,new Date(3000).toISOString());
+    serialized=readFileSync(join(parent,'access','access.json'),'utf8');assert.equal(serialized.includes(enrolled.credential),false);
+  } finally {rmSync(parent,{recursive:true,force:true})}
 });
 
 test('Provider and model registry is tenant scoped, idempotent, and stores no credentials',async()=>{
@@ -186,6 +212,17 @@ test('Registry API derives organization from the session and restricts writes to
     const modelResponse=await fetch(url+'/api/organization/models',{method:'POST',headers,body:JSON.stringify({connection_id:created.connection.connection_id,
       provider_model_id:'customer-model-1',display_name:'Head',role_capabilities:['head']})});assert.equal(modelResponse.status,200);
     assert.equal((await fetch(url+'/api/organization/models',{headers:{'X-Test-Role':'owner'}}).then(value=>value.json())).models.length,1);
+    const deniedEnrollment=await fetch(url+'/api/organization/node-enrollments',{method:'POST',headers:{...headers,'X-Test-Role':'member'},
+      body:JSON.stringify({display_name:'Denied node'})});assert.equal(deniedEnrollment.status,403);
+    const enrollment=await fetch(url+'/api/organization/node-enrollments',{method:'POST',headers,body:JSON.stringify({display_name:'Build node'})}).then(value=>value.json());
+    const capabilities={agent_version:'0.1.0',os:'linux',arch:'x64',cpu_logical:8,memory_bytes:17179869184,gpu_status:'unavailable',gpu_devices:[],adapters:['ollama']};
+    const enrolledResponse=await fetch(url+'/api/agent/enroll',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({token:enrollment.token,capabilities})});assert.equal(enrolledResponse.status,200);const enrolled=await enrolledResponse.json();
+    assert.equal(enrolled.node.organization_id,'org-42');assert.equal(enrolled.node.connectivity,'online');
+    const heartbeat=await fetch(url+'/api/agent/heartbeat',{method:'POST',headers:{Authorization:`Bearer ${enrolled.agent_credential}`,'Content-Type':'application/json'},
+      body:JSON.stringify({capabilities:{...capabilities,cpu_logical:12}})});assert.equal(heartbeat.status,200);
+    const nodes=await fetch(url+'/api/organization/nodes',{headers:{'X-Test-Role':'owner'}}).then(value=>value.json());assert.equal(nodes.nodes.length,1);
+    assert.equal(nodes.nodes[0].cpu_logical,12);assert.equal(JSON.stringify(nodes).includes('credential'),false);
   } finally {await new Promise(resolveClose=>server.close(resolveClose));rmSync(parent,{recursive:true,force:true})}
 });
 

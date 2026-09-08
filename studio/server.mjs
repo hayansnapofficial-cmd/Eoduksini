@@ -36,6 +36,9 @@ const body=async(request,limit)=>{const chunks=[];let length=0;for await(const c
 const jsonBody=async(request,limit=4096)=>{if(String(request.headers['content-type']??'').split(';')[0].trim().toLowerCase()!=='application/json')
   throw new Error('INVALID_CONTENT_TYPE');return JSON.parse((await body(request,limit)).toString('utf8'))};
 const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
+const bearer=request=>{const value=String(request.headers.authorization??'');return value.startsWith('Bearer ')?value.slice(7):null};
+const publicNode=(node,now=Date.now())=>({...node,connectivity:node.status==='revoked'?'revoked':node.last_seen_at&&
+  now-Date.parse(node.last_seen_at)<=90_000?'online':'offline'});
 const denied=(request,response,code)=>request.url.startsWith('/api/')?send(response,code==='ADMIN_REQUIRED'?403:401,failure(code)):
   redirect(response,'/?access='+encodeURIComponent(code));
 const SUBSCRIPTION_FILTERS=new Set(['all','none','active','trialing','past_due','canceled','unpaid','incomplete','incomplete_expired','paused']);
@@ -90,14 +93,24 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
         const payload=await body(request,64*1024);await billing.feedback(payload);send(response,200,Buffer.from('SUCCESS'),'text/plain; charset=utf-8')}
       catch {send(response,400,failure('INVALID_PAYMENT_FEEDBACK'))}return;
     }
+    if(pathname==='/api/agent/enroll' && request.method==='POST') {try{if(!store)throw new Error('AGENT_SERVICE_UNAVAILABLE');const payload=await jsonBody(request);
+      if(!exact(payload,['token','capabilities']))throw new Error('INVALID_NODE_ENROLLMENT');const result=await store.enrollNode(payload);
+      send(response,200,json({schema_version:1,agent_credential:result.credential,node:publicNode(result.node)}))}
+      catch(error){const unavailable=error?.message==='AGENT_SERVICE_UNAVAILABLE',unauthorized=error?.message==='INVALID_ENROLLMENT_TOKEN';
+        send(response,unavailable?503:unauthorized?401:400,failure(unavailable?'AGENT_SERVICE_UNAVAILABLE':unauthorized?'INVALID_ENROLLMENT_TOKEN':'INVALID_NODE_CAPABILITIES'))}return}
+    if(pathname==='/api/agent/heartbeat' && request.method==='POST') {try{if(!store)throw new Error('AGENT_SERVICE_UNAVAILABLE');const payload=await jsonBody(request);
+      if(!exact(payload,['capabilities']))throw new Error('INVALID_NODE_CAPABILITIES');const node=await store.heartbeatNode({credential:bearer(request),capabilities:payload.capabilities});
+      send(response,200,json({schema_version:1,node:publicNode(node)}))}
+      catch(error){const unavailable=error?.message==='AGENT_SERVICE_UNAVAILABLE',unauthorized=error?.message==='INVALID_AGENT_CREDENTIAL';
+        send(response,unavailable?503:unauthorized?401:400,failure(unavailable?'AGENT_SERVICE_UNAVAILABLE':unauthorized?'INVALID_AGENT_CREDENTIAL':'INVALID_NODE_CAPABILITIES'))}return}
     if(publicAssets.has(pathname) && ['GET','HEAD'].includes(request.method)) {const value=publicAssets.get(pathname);send(response,200,value.body,value.type,head);return}
     const needsSession=protectedAssets.has(pathname)||adminAssets.has(pathname)||
       ['/api/snapshot','/api/organization','/api/checkout','/api/logout','/api/admin/summary','/api/admin/customers'].includes(pathname);
-    const registryApi=['/api/organization/providers','/api/organization/models'].includes(pathname);
-    if((needsSession||registryApi) && !session) {denied(request,response,'LOGIN_REQUIRED');return}
+    const organizationApi=['/api/organization/providers','/api/organization/models','/api/organization/nodes','/api/organization/node-enrollments'].includes(pathname);
+    if((needsSession||organizationApi) && !session) {denied(request,response,'LOGIN_REQUIRED');return}
     if((adminAssets.has(pathname)||pathname.startsWith('/api/admin/')) && !session.admin) {denied(request,response,'ADMIN_REQUIRED');return}
-    if((pathname==='/studio'||pathname==='/app.js'||pathname==='/settings'||pathname==='/settings.js'||pathname==='/settings.css'||pathname==='/api/snapshot'||registryApi) && !session.entitlement.active) {denied(request,response,'SUBSCRIPTION_REQUIRED');return}
-    if(request.method==='POST' && pathname!=='/api/payapp/feedback') {
+    if((pathname==='/studio'||pathname==='/app.js'||pathname==='/settings'||pathname==='/settings.js'||pathname==='/settings.css'||pathname==='/api/snapshot'||organizationApi) && !session.entitlement.active) {denied(request,response,'SUBSCRIPTION_REQUIRED');return}
+    if(request.method==='POST' && pathname!=='/api/payapp/feedback'&&!pathname.startsWith('/api/agent/')) {
       if(request.headers.origin!==origin || request.headers['x-eoduksini-request']!=='1') {send(response,403,failure('REQUEST_ORIGIN_REJECTED'));return}
     }
     if(pathname==='/api/logout' && request.method==='POST') {send(response,200,json({url:'/'}),undefined,false,{'Set-Cookie':auth.logout(request)});return}
@@ -107,6 +120,14 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
       connections:store.providerConnections(session.organization.organization_id)}),undefined,head);return}
     if(pathname==='/api/organization/models' && ['GET','HEAD'].includes(request.method)) {send(response,200,json({schema_version:1,
       models:store.models(session.organization.organization_id)}),undefined,head);return}
+    if(pathname==='/api/organization/nodes' && ['GET','HEAD'].includes(request.method)) {send(response,200,json({schema_version:1,
+      nodes:store.nodes(session.organization.organization_id).map(value=>publicNode(value))}),undefined,head);return}
+    if(pathname==='/api/organization/node-enrollments' && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){
+      send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}try{const payload=await jsonBody(request,1024);
+        if(!exact(payload,['display_name']))throw new Error('INVALID_NODE_ENROLLMENT');send(response,200,json({schema_version:1,
+          ...await store.createNodeEnrollment({organization_id:session.organization.organization_id,...payload})}))}
+      catch(error){const code=['INVALID_NODE_ENROLLMENT','INVALID_CONTENT_TYPE','BODY_TOO_LARGE'].includes(error?.message)?error.message:'INVALID_NODE_ENROLLMENT';
+        send(response,400,failure(code))}return}
     if(pathname==='/api/organization/providers' && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}
       try{const payload=await jsonBody(request);if(!exact(payload,['provider_id','display_name']))throw new Error('INVALID_PROVIDER_CONNECTION');
         send(response,200,json({schema_version:1,...await store.createProviderConnection({organization_id:session.organization.organization_id,...payload})}))}

@@ -15,4 +15,11 @@
         <label>표시 이름<input id="model-name" required maxlength="128" placeholder="예: 주 계획 모델"></label><fieldset><legend>가능한 역할</legend><div id="roles" class="role-grid"></div></fieldset>
         <button class="primary-action" type="submit">모델 등록</button></form><p id="model-message" class="form-message" role="status"></p><div id="models" class="registry-list"></div></section>
   </div>
+  <section class="registry-panel node-panel"><div class="panel-title"><div><p class="eyebrow">STEP 03</p><h2>고객 Node Agent</h2></div><span id="node-count">0</span></div>
+    <div class="node-layout"><form id="enrollment-form"><label>노드 이름<input id="node-name" required maxlength="128" placeholder="예: 디자인팀 워크스테이션"></label>
+      <button class="primary-action" type="submit">10분 등록 토큰 발급</button><p id="node-message" class="form-message" role="status"></p></form>
+      <div id="enrollment-result" class="token-result hidden"><p class="eyebrow">SHOW ONCE · 10 MINUTES</p><strong>이 토큰은 다시 표시되지 않습니다.</strong><code id="enrollment-token"></code>
+        <button id="copy-token" class="secondary-action" type="button">토큰 복사</button><p>고객 노드에서 환경값 <code>EODUKSINI_ENROLLMENT_TOKEN</code>으로 전달한 뒤 Agent의 <code>enroll</code> 명령을 실행하세요.</p></div></div>
+    <div id="nodes" class="node-list"></div>
+  </section>
 </main><script type="module" src="/settings.js"></script></body></html>

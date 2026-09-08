@@ -60,6 +60,7 @@ packages/engine-primitives/  Core가 소유하는 범용 계획·검사 모듈
 adapters/
   demo/                 독립 fixture 어댑터
 studio/                 읽기 전용 로컬 운영 웹 화면
+agent/                  고객 소유 노드의 outbound-only 등록·heartbeat client
 docs/                   경계, V2 후속 계획, 검증 결과
 ```
 

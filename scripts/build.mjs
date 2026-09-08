@@ -24,9 +24,9 @@ for(const adapter of adapters) {
   if(project.project_id!==adapter.name) throw new Error('ADAPTER_DIRECTORY_MISMATCH: '+adapter.name);
 }
 for(const path of ['core','packages/engine-primitives','packages/runtime-adapters',
-  'studio',...adapters.map(adapter=>adapter.relative_path),'package-lock.json']) copy(path);
+  'studio','agent',...adapters.map(adapter=>adapter.relative_path),'package-lock.json']) copy(path);
 const runtime={name:pkg.name,version:pkg.version,private:true,type:'module',bin:pkg.bin,engines:pkg.engines,
-  scripts:{studio:'node studio/server.mjs'},dependencies:pkg.dependencies};
+  scripts:{studio:'node studio/server.mjs',agent:'node agent/node-agent.mjs'},dependencies:pkg.dependencies};
 writeFileSync(join(staging,'package.json'),JSON.stringify(runtime,null,2)+'\n');
 function inventory(path) {
   return readdirSync(path,{withFileTypes:true}).flatMap(entry=>{
