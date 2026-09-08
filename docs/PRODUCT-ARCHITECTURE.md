@@ -31,3 +31,9 @@ Understood as: Eoduksini is a multi-tenant control plane that orchestrates each 
 7. Usage statements and optional verified-savings pricing
 
 The current JSON access store remains a single-host development implementation. Production multi-instance operation requires transactional tenant storage, durable sessions, encrypted secret handling, rate limits, backup and restore, and an authenticated agent transport.
+
+## Provider and model registry slice
+
+The organization-scoped registry stores provider type, display metadata, provider model identifiers, and declared role capabilities. It does not accept API keys, access tokens, local endpoint URLs, or other provider credentials. Those values remain on a future enrolled customer Agent. A newly registered provider connection is therefore `pending_agent`, not connected or execution-ready.
+
+Registry reads are available to organization members with an active Studio entitlement. Only organization `owner` and `admin` roles may add records. Organization identity is derived from the authenticated server session and cannot be selected by the client. Model discovery, credential validation, live provider calls, node enrollment, head-model selection, routing, editing, and deletion remain later delivery steps.

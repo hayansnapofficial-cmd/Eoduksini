@@ -7,13 +7,15 @@ import { createAccessStore } from './access-store.mjs';
 import { createAuth } from './auth.mjs';
 import { createBilling } from './billing.mjs';
 import { adminEntitlement, publicPlanCatalog, subscriptionEntitlement } from './plans.mjs';
+import { providerCatalog } from './provider-catalog.mjs';
 
 const asset=(file,type='text/html; charset=utf-8')=>({body:readFileSync(new URL('./public/'+file,import.meta.url)),type});
 const publicAssets=new Map([['/',asset('home.html')],['/home.js',asset('home.js','text/javascript; charset=utf-8')],
   ['/styles.css',asset('styles.css','text/css; charset=utf-8')]]);
 const protectedAssets=new Map([['/studio',asset('index.html')],['/app.js',asset('app.js','text/javascript; charset=utf-8')],
   ['/account',asset('account.html')],['/account.js',asset('account.js','text/javascript; charset=utf-8')],
-  ['/account.css',asset('account.css','text/css; charset=utf-8')]]);
+  ['/account.css',asset('account.css','text/css; charset=utf-8')],['/settings',asset('settings.html')],
+  ['/settings.js',asset('settings.js','text/javascript; charset=utf-8')],['/settings.css',asset('settings.css','text/css; charset=utf-8')]]);
 const adminAssets=new Map([['/admin',asset('admin.html')],['/admin.js',asset('admin.js','text/javascript; charset=utf-8')]]);
 const securityHeaders={
   'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://avatars.githubusercontent.com; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
@@ -31,6 +33,9 @@ const safeSession=value=>value?{authenticated:true,user:value.user,organization:
   subscription:value.entitlement,admin:value.admin}:
   {authenticated:false,user:null,organization:null,organizations:[],subscription:subscriptionEntitlement(),admin:false};
 const body=async(request,limit)=>{const chunks=[];let length=0;for await(const chunk of request){length+=chunk.length;if(length>limit)throw new Error('BODY_TOO_LARGE');chunks.push(chunk)}return Buffer.concat(chunks)};
+const jsonBody=async(request,limit=4096)=>{if(String(request.headers['content-type']??'').split(';')[0].trim().toLowerCase()!=='application/json')
+  throw new Error('INVALID_CONTENT_TYPE');return JSON.parse((await body(request,limit)).toString('utf8'))};
+const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
 const denied=(request,response,code)=>request.url.startsWith('/api/')?send(response,code==='ADMIN_REQUIRED'?403:401,failure(code)):
   redirect(response,'/?access='+encodeURIComponent(code));
 const SUBSCRIPTION_FILTERS=new Set(['all','none','active','trialing','past_due','canceled','unpaid','incomplete','incomplete_expired','paused']);
@@ -74,6 +79,7 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
       auth_configured:auth.configured,billing_configured:billing.configured}),undefined,head);return}
     if(pathname==='/api/plans' && ['GET','HEAD'].includes(request.method)) {send(response,200,json({schema_version:1,
       plans:billing.plans??publicPlanCatalog.map(plan=>({...plan,billing:{provider:'payapp',currency:'KRW',amount:null,available:false}}))}),undefined,head);return}
+    if(pathname==='/api/provider-catalog' && ['GET','HEAD'].includes(request.method)) {send(response,200,json({schema_version:1,providers:providerCatalog}),undefined,head);return}
     if(pathname==='/auth/github' && request.method==='GET') {try{redirect(response,auth.begin())}catch{redirect(response,'/?error=auth_not_configured')}return}
     if(pathname==='/auth/github/callback' && request.method==='GET') {
       try {const result=await auth.complete({code:url.searchParams.get('code'),state:url.searchParams.get('state')});
@@ -87,15 +93,29 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
     if(publicAssets.has(pathname) && ['GET','HEAD'].includes(request.method)) {const value=publicAssets.get(pathname);send(response,200,value.body,value.type,head);return}
     const needsSession=protectedAssets.has(pathname)||adminAssets.has(pathname)||
       ['/api/snapshot','/api/organization','/api/checkout','/api/logout','/api/admin/summary','/api/admin/customers'].includes(pathname);
-    if(needsSession && !session) {denied(request,response,'LOGIN_REQUIRED');return}
+    const registryApi=['/api/organization/providers','/api/organization/models'].includes(pathname);
+    if((needsSession||registryApi) && !session) {denied(request,response,'LOGIN_REQUIRED');return}
     if((adminAssets.has(pathname)||pathname.startsWith('/api/admin/')) && !session.admin) {denied(request,response,'ADMIN_REQUIRED');return}
-    if((pathname==='/studio'||pathname==='/app.js'||pathname==='/api/snapshot') && !session.entitlement.active) {denied(request,response,'SUBSCRIPTION_REQUIRED');return}
+    if((pathname==='/studio'||pathname==='/app.js'||pathname==='/settings'||pathname==='/settings.js'||pathname==='/settings.css'||pathname==='/api/snapshot'||registryApi) && !session.entitlement.active) {denied(request,response,'SUBSCRIPTION_REQUIRED');return}
     if(request.method==='POST' && pathname!=='/api/payapp/feedback') {
       if(request.headers.origin!==origin || request.headers['x-eoduksini-request']!=='1') {send(response,403,failure('REQUEST_ORIGIN_REJECTED'));return}
     }
     if(pathname==='/api/logout' && request.method==='POST') {send(response,200,json({url:'/'}),undefined,false,{'Set-Cookie':auth.logout(request)});return}
     if(pathname==='/api/organization' && ['GET','HEAD'].includes(request.method)) {send(response,200,json({schema_version:1,
       organization:session.organization,organizations:session.organizations}),undefined,head);return}
+    if(pathname==='/api/organization/providers' && ['GET','HEAD'].includes(request.method)) {send(response,200,json({schema_version:1,
+      connections:store.providerConnections(session.organization.organization_id)}),undefined,head);return}
+    if(pathname==='/api/organization/models' && ['GET','HEAD'].includes(request.method)) {send(response,200,json({schema_version:1,
+      models:store.models(session.organization.organization_id)}),undefined,head);return}
+    if(pathname==='/api/organization/providers' && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}
+      try{const payload=await jsonBody(request);if(!exact(payload,['provider_id','display_name']))throw new Error('INVALID_PROVIDER_CONNECTION');
+        send(response,200,json({schema_version:1,...await store.createProviderConnection({organization_id:session.organization.organization_id,...payload})}))}
+      catch(error){const code=['INVALID_PROVIDER_CONNECTION','INVALID_CONTENT_TYPE','BODY_TOO_LARGE'].includes(error?.message)?error.message:'INVALID_PROVIDER_CONNECTION';send(response,400,failure(code))}return}
+    if(pathname==='/api/organization/models' && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}
+      try{const payload=await jsonBody(request);if(!exact(payload,['connection_id','provider_model_id','display_name','role_capabilities']))throw new Error('INVALID_MODEL');
+        send(response,200,json({schema_version:1,...await store.createModel({organization_id:session.organization.organization_id,...payload})}))}
+      catch(error){const known=['INVALID_MODEL','MODEL_ALREADY_EXISTS','INVALID_CONTENT_TYPE','BODY_TOO_LARGE'],code=known.includes(error?.message)?error.message:'INVALID_MODEL';
+        send(response,error?.message==='MODEL_ALREADY_EXISTS'?409:400,failure(code))}return}
     if(pathname==='/api/checkout' && request.method==='POST') {try{if(String(request.headers['content-type']??'').split(';')[0].trim().toLowerCase()!=='application/json')throw new Error('INVALID_CONTENT_TYPE');
       const payload=JSON.parse((await body(request,1024)).toString('utf8'));send(response,200,json({url:await billing.checkout(session,payload)}))}
       catch(error){const known={INVALID_PHONE:400,INVALID_PLAN:400,SUBSCRIPTION_ALREADY_ACTIVE:409},code=Object.hasOwn(known,error?.message)?error.message:'CHECKOUT_UNAVAILABLE';

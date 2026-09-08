@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark">
+  <title>Provider · Model Registry · 어둑시니</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/settings.css"></head>
+<body><header class="site-nav"><a class="wordmark" href="/">어둑시니 <span>EODUKSINI</span></a><nav><a class="nav-link" href="/studio">Studio</a><a class="nav-link" href="/account">내 계정</a></nav></header>
+<main class="settings-main">
+  <header class="settings-heading"><div><p class="eyebrow">ORGANIZATION SETTINGS</p><h1>Provider · Model Registry</h1><p id="organization" class="muted">조직을 확인하는 중입니다.</p></div><span class="boundary-badge">NO SECRETS</span></header>
+  <section class="boundary-note"><strong>자격증명은 고객 Agent에 남습니다.</strong><p>이 화면은 연결 메타데이터와 모델 식별자만 저장합니다. API 키, 토큰, 로컬 주소는 입력하거나 전송하지 않습니다.</p></section>
+  <div class="settings-grid">
+    <section class="registry-panel"><div class="panel-title"><div><p class="eyebrow">STEP 01</p><h2>공급자 연결</h2></div><span id="connection-count">0</span></div>
+      <form id="provider-form"><label>공급자<select id="provider" required></select></label><label>연결 이름<input id="connection-name" required maxlength="128" placeholder="예: 개발팀 OpenAI"></label>
+        <button class="primary-action" type="submit">연결 메타데이터 등록</button></form><p id="provider-message" class="form-message" role="status"></p><div id="connections" class="registry-list"></div></section>
+    <section class="registry-panel"><div class="panel-title"><div><p class="eyebrow">STEP 02</p><h2>모델 등록</h2></div><span id="model-count">0</span></div>
+      <form id="model-form"><label>연결<select id="model-connection" required></select></label><label>공급자 모델 ID<input id="provider-model-id" required maxlength="256" placeholder="Agent가 사용하는 정확한 모델 ID"></label>
+        <label>표시 이름<input id="model-name" required maxlength="128" placeholder="예: 주 계획 모델"></label><fieldset><legend>가능한 역할</legend><div id="roles" class="role-grid"></div></fieldset>
+        <button class="primary-action" type="submit">모델 등록</button></form><p id="model-message" class="form-message" role="status"></p><div id="models" class="registry-list"></div></section>
+  </div>
+</main><script type="module" src="/settings.js"></script></body></html>
