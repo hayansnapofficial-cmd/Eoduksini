@@ -1,0 +1,31 @@
+.payment-field {
+  display: grid;
+  gap: 8px;
+  max-width: 420px;
+  margin-top: 28px;
+}
+
+.payment-field label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.payment-field input {
+  min-height: 44px;
+  border: 1px solid #48545d;
+  border-radius: 2px;
+  background: #10171c;
+  color: var(--ink);
+  padding: 0 14px;
+  font: 15px Consolas, monospace;
+}
+
+.payment-field input:focus {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+.payment-field small {
+  color: var(--muted);
+  line-height: 1.5;
+}

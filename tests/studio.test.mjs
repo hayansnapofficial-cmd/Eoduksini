@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolve, join } from 'node:path';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createStudioSnapshot, unconfiguredSnapshot } from '../studio/snapshot.mjs';
 import { createStudioServer } from '../studio/server.mjs';
@@ -67,14 +67,34 @@ test('Studio server gates Studio by subscription and admin by role',async()=>{
   } finally {await new Promise(resolveClose=>server.close(resolveClose));}
 });
 
+test('Studio exposes a bounded form-only PayApp feedback endpoint and returns exact SUCCESS',async()=>{
+  let received=null;const billing={configured:true,checkout:async()=>'',feedback:async payload=>{received=payload.toString('utf8')}};
+  const server=createStudioServer({billing});await new Promise((accept,reject)=>server.listen(0,'127.0.0.1',accept).once('error',reject));
+  const {port}=server.address(),url=`http://127.0.0.1:${port}/api/payapp/feedback`;
+  try {const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'pay_state=4'});
+    assert.equal(response.status,200);assert.equal(await response.text(),'SUCCESS');assert.equal(received,'pay_state=4');
+    assert.equal((await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,400);
+  } finally {await new Promise(resolveClose=>server.close(resolveClose))}
+});
+
 test('Access store persists identity and applies webhook events idempotently',async()=>{
   const parent=mkdtempSync(join(tmpdir(),'eoduksini-access-parent-')),root=join(parent,'access');
   try {const store=createAccessStore(root);await store.upsertIdentity({github_id:'42',login:'operator',avatar_url:null});
     assert.equal(store.entitlement('42').active,false);
-    assert.deepEqual(await store.applySubscription({event_id:'evt_1',github_id:'42',customer_id:'cus_1',subscription_id:'sub_1',
+    assert.deepEqual(await store.applySubscription({event_id:'evt_1',provider:'payapp',github_id:'42',customer_id:'merchant',subscription_id:'sub_1',
       status:'active',current_period_end:123}),{changed:true});
-    assert.deepEqual(await store.applySubscription({event_id:'evt_1',github_id:'42',customer_id:'cus_1',subscription_id:'sub_1',
+    assert.deepEqual(await store.applySubscription({event_id:'evt_1',provider:'payapp',github_id:'42',customer_id:'merchant',subscription_id:'sub_1',
       status:'active',current_period_end:123}),{changed:false});assert.equal(store.entitlement('42').active,true);
+  } finally {rmSync(parent,{recursive:true,force:true})}
+});
+
+test('Access store migrates legacy Stripe-shaped records to provider-neutral billing fields',()=>{
+  const parent=mkdtempSync(join(tmpdir(),'eoduksini-access-migration-')),root=join(parent,'access');mkdirSync(root);
+  const legacy={schema_version:1,users:{'42':{github_id:'42',login:'operator',avatar_url:null,stripe_customer_id:null,
+    stripe_subscription_id:null,subscription_status:null,current_period_end:null,updated_at:'2026-09-08T00:00:00.000Z'}},processed_webhook_ids:[]};
+  writeFileSync(join(root,'access.json'),JSON.stringify(legacy));
+  try {const store=createAccessStore(root),user=store.user('42');assert.equal(user.billing_provider,null);
+    assert.equal(user.billing_subscription_id,null);assert.equal(JSON.parse(readFileSync(join(root,'access.json'),'utf8')).schema_version,2);
   } finally {rmSync(parent,{recursive:true,force:true})}
 });
 
@@ -92,16 +112,34 @@ test('GitHub callback creates an opaque server session and never exposes the pro
   } finally {rmSync(parent,{recursive:true,force:true})}
 });
 
-test('Stripe checkout binds the GitHub identity and webhook grants the resulting subscription',async()=>{
+test('PayApp checkout binds the GitHub identity and verified feedback grants the subscription',async()=>{
   const parent=mkdtempSync(join(tmpdir(),'eoduksini-billing-parent-')),store=createAccessStore(join(parent,'access'));
-  await store.upsertIdentity({github_id:'42',login:'operator',avatar_url:null});let checkoutInput;
-  const subscription={id:'sub_1',customer:'cus_1',status:'active',current_period_end:999,metadata:{github_user_id:'42'}};
-  const stripeClient={checkout:{sessions:{create:async input=>{checkoutInput=input;return {url:'https://checkout.stripe.test/session'}}}},
-    billingPortal:{sessions:{create:async()=>({url:'https://billing.stripe.test/portal'})}},subscriptions:{retrieve:async()=>subscription},
-    webhooks:{constructEvent:()=>({id:'evt_1',type:'customer.subscription.updated',data:{object:subscription}})}};
-  try {const billing=createBilling({secretKey:'sk_test',webhookSecret:'whsec_test',priceId:'price_1',origin:'http://127.0.0.1:4317',store,stripeClient});
-    const session={user:{github_id:'42'}};assert.match(await billing.checkout(session),/^https:\/\/checkout/);
-    assert.equal(checkoutInput.mode,'subscription');assert.equal(checkoutInput.subscription_data.metadata.github_user_id,'42');
-    await billing.webhook(Buffer.from('{}'),'signature');assert.equal(store.entitlement('42').active,true);
+  await store.upsertIdentity({github_id:'42',login:'operator',avatar_url:null});let requestBody;
+  const fetchImpl=async(_url,options)=>{requestBody=Object.fromEntries(options.body);return new Response(
+    'state=1&errorMessage=&errno=00000&rebill_no=91&payurl=https%3A%2F%2Fpayapp.kr%2Frequest-token',{status:200})};
+  try {const billing=createBilling({userId:'merchant',linkKey:'key',linkValue:'value',priceKrw:9900,planName:'Studio',cycleDay:'90',
+      expiresOn:'2030-12-31',origin:'https://studio.example.test',store,fetchImpl,requestId:()=> '11111111-1111-4111-8111-111111111111'});
+    const session={user:{github_id:'42'}};assert.equal(await billing.checkout(session,{phone:'010-1234-5678'}),'https://payapp.kr/request-token');
+    assert.equal(requestBody.cmd,'rebillRegist');assert.equal(requestBody.var1,'42');assert.equal(requestBody.var2,'11111111-1111-4111-8111-111111111111');
+    assert.equal(requestBody.recvphone,'01012345678');assert.equal(requestBody.goodprice,'9900');
+    const feedback=new URLSearchParams({userid:'merchant',linkkey:'key',linkval:'value',price:'9900',var1:'42',
+      var2:'11111111-1111-4111-8111-111111111111',mul_no:'501',rebill_no:'91',pay_state:'4'});
+    await billing.feedback(Buffer.from(feedback.toString()));assert.equal(store.entitlement('42').active,true);
+    await billing.feedback(Buffer.from(feedback.toString()));assert.equal(store.entitlement('42').active,true);
+    feedback.set('pay_state','70');await billing.feedback(Buffer.from(feedback.toString()));assert.equal(store.entitlement('42').status,'past_due');
+  } finally {rmSync(parent,{recursive:true,force:true})}
+});
+
+test('PayApp feedback rejects a forged value, price, or unbound request',async()=>{
+  const parent=mkdtempSync(join(tmpdir(),'eoduksini-billing-forgery-')),store=createAccessStore(join(parent,'access'));
+  try {await store.upsertIdentity({github_id:'42',login:'operator',avatar_url:null});
+    const billing=createBilling({userId:'merchant',linkKey:'key',linkValue:'value',priceKrw:9900,expiresOn:'2030-12-31',
+      origin:'https://studio.example.test',store});
+    const base={userid:'merchant',linkkey:'key',linkval:'forged',price:'9900',var1:'42',
+      var2:'11111111-1111-4111-8111-111111111111',mul_no:'501',rebill_no:'91',pay_state:'4'};
+    await assert.rejects(()=>billing.feedback(Buffer.from(new URLSearchParams(base).toString())),/INVALID_PAYAPP_FEEDBACK/);
+    await assert.rejects(()=>billing.feedback(Buffer.from(new URLSearchParams({...base,linkval:'value'}).toString()+'&price=9900')),
+      /DUPLICATE_PAYAPP_FIELD/);
+    assert.equal(store.entitlement('42').active,false);
   } finally {rmSync(parent,{recursive:true,force:true})}
 });
