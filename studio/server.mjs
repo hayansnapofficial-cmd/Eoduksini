@@ -6,6 +6,7 @@ import { studioSnapshot, unconfiguredSnapshot } from './snapshot.mjs';
 import { createAccessStore } from './access-store.mjs';
 import { createAuth } from './auth.mjs';
 import { createBilling } from './billing.mjs';
+import { adminEntitlement, publicPlanCatalog, subscriptionEntitlement } from './plans.mjs';
 
 const asset=(file,type='text/html; charset=utf-8')=>({body:readFileSync(new URL('./public/'+file,import.meta.url)),type});
 const publicAssets=new Map([['/',asset('home.html')],['/home.js',asset('home.js','text/javascript; charset=utf-8')],
@@ -27,12 +28,12 @@ const send=(response,status,body,type='application/json; charset=utf-8',head=fal
 const failure=code=>json({schema_version:1,status:'ERROR',code});
 const redirect=(response,location,headers={})=>{response.writeHead(303,{...securityHeaders,...headers,Location:location,'Content-Length':0});response.end()};
 const safeSession=value=>value?{authenticated:true,user:value.user,subscription:value.entitlement,admin:value.admin}:
-  {authenticated:false,user:null,subscription:{active:false,status:'none',current_period_end:null},admin:false};
+  {authenticated:false,user:null,subscription:subscriptionEntitlement(),admin:false};
 const body=async(request,limit)=>{const chunks=[];let length=0;for await(const chunk of request){length+=chunk.length;if(length>limit)throw new Error('BODY_TOO_LARGE');chunks.push(chunk)}return Buffer.concat(chunks)};
 const denied=(request,response,code)=>request.url.startsWith('/api/')?send(response,code==='ADMIN_REQUIRED'?403:401,failure(code)):
   redirect(response,'/?access='+encodeURIComponent(code));
 const SUBSCRIPTION_FILTERS=new Set(['all','none','active','trialing','past_due','canceled','unpaid','incomplete','incomplete_expired','paused']);
-const customerPage=(users,url)=>{
+const customerPage=(users,url,isAdminId=()=>false)=>{
   const q=(url.searchParams.get('q')??'').trim().toLocaleLowerCase('en-US'),status=url.searchParams.get('status')??'all';
   const limit=Number(url.searchParams.get('limit')??50),offset=Number(url.searchParams.get('offset')??0);
   if(q.length>128||!SUBSCRIPTION_FILTERS.has(status)||!Number.isSafeInteger(limit)||limit<1||limit>100||
@@ -41,10 +42,17 @@ const customerPage=(users,url)=>{
     const subscription=user.subscription_status??'none';
     return (status==='all'||subscription===status)&&(!q||user.login.toLocaleLowerCase('en-US').includes(q)||user.github_id.includes(q));
   }).sort((left,right)=>right.updated_at.localeCompare(left.updated_at)||left.github_id.localeCompare(right.github_id));
-  return {schema_version:1,total:filtered.length,offset,limit,customers:filtered.slice(offset,offset+limit).map(user=>({
+  return {schema_version:2,total:filtered.length,offset,limit,customers:filtered.slice(offset,offset+limit).map(user=>({
     github_id:user.github_id,login:user.login,avatar_url:user.avatar_url,billing_provider:user.billing_provider,
-    subscription:{status:user.subscription_status??'none',active:['active','trialing'].includes(user.subscription_status),
-      current_period_end:user.current_period_end},updated_at:user.updated_at}))};
+    role:isAdminId(user.github_id)?'admin':'customer',subscription:isAdminId(user.github_id)?adminEntitlement():subscriptionEntitlement({
+      status:user.subscription_status??'none',plan_id:user.plan_id??null,current_period_end:user.current_period_end}),updated_at:user.updated_at}))};
+};
+const projectSnapshot=(value,entitlement)=>{
+  const features=entitlement.features??{};if(features.advanced_metering&&features.economics&&features.review_and_adoption)
+    return {...value,access:{plan_id:entitlement.plan_id,unlimited:entitlement.unlimited},capabilities:features};
+  return {...value,access:{plan_id:entitlement.plan_id,unlimited:entitlement.unlimited},capabilities:features,
+    totals:{...value.totals,observed_input_tokens:null,observed_output_tokens:null},economics:null,
+    attempts:value.attempts.map(attempt=>({...attempt,metering:attempt.metering?{execution_duration_ms:attempt.metering.execution_duration_ms}:null}))};
 };
 
 export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=null,billing=null,store=null,origin='http://127.0.0.1:4317'}={}) {
@@ -61,6 +69,8 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
     }
     if(pathname==='/api/session' && ['GET','HEAD'].includes(request.method)) {send(response,200,json({schema_version:1,...safeSession(session),
       auth_configured:auth.configured,billing_configured:billing.configured}),undefined,head);return}
+    if(pathname==='/api/plans' && ['GET','HEAD'].includes(request.method)) {send(response,200,json({schema_version:1,
+      plans:billing.plans??publicPlanCatalog.map(plan=>({...plan,billing:{provider:'payapp',currency:'KRW',amount:null,available:false}}))}),undefined,head);return}
     if(pathname==='/auth/github' && request.method==='GET') {try{redirect(response,auth.begin())}catch{redirect(response,'/?error=auth_not_configured')}return}
     if(pathname==='/auth/github/callback' && request.method==='GET') {
       try {const result=await auth.complete({code:url.searchParams.get('code'),state:url.searchParams.get('state')});
@@ -83,15 +93,19 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
     if(pathname==='/api/logout' && request.method==='POST') {send(response,200,json({url:'/'}),undefined,false,{'Set-Cookie':auth.logout(request)});return}
     if(pathname==='/api/checkout' && request.method==='POST') {try{if(String(request.headers['content-type']??'').split(';')[0].trim().toLowerCase()!=='application/json')throw new Error('INVALID_CONTENT_TYPE');
       const payload=JSON.parse((await body(request,1024)).toString('utf8'));send(response,200,json({url:await billing.checkout(session,payload)}))}
-      catch(error){send(response,error?.message==='INVALID_PHONE'?400:503,failure(error?.message==='INVALID_PHONE'?'INVALID_PHONE':'CHECKOUT_UNAVAILABLE'))}return}
-    if(pathname==='/api/snapshot' && ['GET','HEAD'].includes(request.method)) {try{send(response,200,json(stateRoot===null?unconfiguredSnapshot():snapshot(stateRoot)),undefined,head)}catch{send(response,503,failure('CONTROLLER_STATE_UNAVAILABLE'),undefined,head)}return}
+      catch(error){const known={INVALID_PHONE:400,INVALID_PLAN:400,SUBSCRIPTION_ALREADY_ACTIVE:409},code=Object.hasOwn(known,error?.message)?error.message:'CHECKOUT_UNAVAILABLE';
+        send(response,known[code]??503,failure(code))}return}
+    if(pathname==='/api/snapshot' && ['GET','HEAD'].includes(request.method)) {try{const value=stateRoot===null?unconfiguredSnapshot():snapshot(stateRoot);
+      send(response,200,json(projectSnapshot(value,session.entitlement)),undefined,head)}catch{send(response,503,failure('CONTROLLER_STATE_UNAVAILABLE'),undefined,head)}return}
     if(pathname==='/api/admin/summary' && ['GET','HEAD'].includes(request.method)) {
-      const users=store?.users?.()??[],active=users.filter(user=>['active','trialing'].includes(user.subscription_status)).length;
-      send(response,200,json({schema_version:1,total_users:users.length,active_subscriptions:active,
+      const users=store?.users?.()??[],active=users.filter(user=>['active','trialing'].includes(user.subscription_status)).length,
+        admins=users.filter(user=>auth.isAdminId?.(user.github_id)).length;
+      send(response,200,json({schema_version:2,total_users:users.length,active_subscriptions:active,admin_accounts:admins,
+        plan_counts:users.reduce((out,user)=>{if(['active','trialing'].includes(user.subscription_status)&&user.plan_id)out[user.plan_id]=(out[user.plan_id]??0)+1;return out},{}),
         subscription_counts:users.reduce((out,user)=>{const key=user.subscription_status??'none';out[key]=(out[key]??0)+1;return out},{})}),undefined,head);return;
     }
     if(pathname==='/api/admin/customers' && ['GET','HEAD'].includes(request.method)) {
-      try {send(response,200,json(customerPage(store?.users?.()??[],url)),undefined,head)}
+      try {send(response,200,json(customerPage(store?.users?.()??[],url,auth.isAdminId)),undefined,head)}
       catch {send(response,400,failure('INVALID_CUSTOMER_QUERY'),undefined,head)}return;
     }
     const value=protectedAssets.get(pathname)??adminAssets.get(pathname);
@@ -120,7 +134,8 @@ export function startStudio(argv=process.argv.slice(2),environment=process.env) 
   const auth=createAuth({clientId:environment.EODUKSINI_GITHUB_CLIENT_ID,clientSecret:environment.EODUKSINI_GITHUB_CLIENT_SECRET,
     origin,store,adminIds:(environment.EODUKSINI_ADMIN_GITHUB_IDS??'').split(',').map(value=>value.trim()).filter(Boolean)});
   const billing=createBilling({userId:environment.EODUKSINI_PAYAPP_USER_ID,linkKey:environment.EODUKSINI_PAYAPP_LINK_KEY,
-    linkValue:environment.EODUKSINI_PAYAPP_LINK_VALUE,priceKrw:environment.EODUKSINI_PAYAPP_PRICE_KRW,
+    linkValue:environment.EODUKSINI_PAYAPP_LINK_VALUE,priceKrwByPlan:{core:environment.EODUKSINI_PAYAPP_CORE_PRICE_KRW,
+      pro:environment.EODUKSINI_PAYAPP_PRO_PRICE_KRW},
     planName:environment.EODUKSINI_PAYAPP_PLAN_NAME,cycleDay:environment.EODUKSINI_PAYAPP_CYCLE_DAY,
     expiresOn:environment.EODUKSINI_PAYAPP_EXPIRES_ON,origin,store});
   const server=createStudioServer({stateRoot,origin,auth,billing,store});server.listen(port,'127.0.0.1',()=>console.log(`Eoduksini Web: ${origin}`));return server;

@@ -8,6 +8,7 @@ import { createStudioServer } from '../studio/server.mjs';
 import { createAccessStore } from '../studio/access-store.mjs';
 import { createAuth } from '../studio/auth.mjs';
 import { createBilling } from '../studio/billing.mjs';
+import { adminEntitlement, planFeatures, subscriptionEntitlement } from '../studio/plans.mjs';
 
 const state={repo_root:'C:/sensitive/repository',project:{project_id:'demo'},control_epoch:4,
   policy:{quota:{nodeId:'node-2'},secret:'never expose'},approvals:{'attempt-1':{request:{
@@ -42,32 +43,40 @@ test('Unconfigured snapshot has an explicit empty state',()=>{
 
 test('Studio server gates Studio by subscription and admin by role',async()=>{
   const expected=createStudioSnapshot(statusResult,economicsResult,0);
-  const subscriber={user:{github_id:'1',login:'member',avatar_url:null},entitlement:{active:true,status:'active',current_period_end:null},admin:false};
-  const inactive={...subscriber,entitlement:{active:false,status:'none',current_period_end:null}};
-  const administrator={...subscriber,user:{...subscriber.user,login:'owner'},admin:true};
+  const subscriber={user:{github_id:'1',login:'member',avatar_url:null},entitlement:subscriptionEntitlement({status:'active',plan_id:'pro'}),admin:false};
+  const coreSubscriber={...subscriber,entitlement:subscriptionEntitlement({status:'active',plan_id:'core'})};
+  const inactive={...subscriber,entitlement:subscriptionEntitlement()};
+  const administrator={...subscriber,user:{...subscriber.user,login:'owner'},entitlement:adminEntitlement(),admin:true};
   const auth={configured:true,session:request=>request.headers['x-test-role']==='admin'?administrator:
-    request.headers['x-test-role']==='subscriber'?subscriber:request.headers['x-test-role']==='inactive'?inactive:null,
-    begin:()=>'',complete:async()=>{},logout:()=>''};
-  const store={users:()=>[{github_id:'1',login:'member',avatar_url:null,billing_provider:'payapp',subscription_status:'active',current_period_end:null,updated_at:'2026-09-08T01:00:00.000Z'},
-    {github_id:'2',login:'waiting-user',avatar_url:null,billing_provider:null,subscription_status:null,current_period_end:null,updated_at:'2026-09-08T00:00:00.000Z'}]};
+    request.headers['x-test-role']==='subscriber'?subscriber:request.headers['x-test-role']==='core'?coreSubscriber:
+      request.headers['x-test-role']==='inactive'?inactive:null,begin:()=>'',complete:async()=>{},logout:()=>'',isAdminId:id=>id==='9'};
+  const store={users:()=>[{github_id:'1',login:'member',avatar_url:null,billing_provider:'payapp',subscription_status:'active',plan_id:'pro',current_period_end:null,updated_at:'2026-09-08T01:00:00.000Z'},
+    {github_id:'2',login:'waiting-user',avatar_url:null,billing_provider:null,subscription_status:null,plan_id:null,current_period_end:null,updated_at:'2026-09-08T00:00:00.000Z'},
+    {github_id:'9',login:'owner',avatar_url:null,billing_provider:null,subscription_status:null,plan_id:null,current_period_end:null,updated_at:'2026-09-08T02:00:00.000Z'}]};
   const server=createStudioServer({stateRoot:resolve('fixture-state'),snapshot:()=>expected,auth,store});
   await new Promise((accept,reject)=>server.listen(0,'127.0.0.1',accept).once('error',reject));
   const {port}=server.address(),url=`http://127.0.0.1:${port}`;
   try {
     const page=await fetch(url+'/');assert.equal(page.status,200);assert.match(page.headers.get('content-security-policy'),/default-src 'self'/);
     assert.match(await page.text(),/어둑시니/);
+    const plans=await fetch(url+'/api/plans').then(value=>value.json());assert.deepEqual(plans.plans.map(plan=>[plan.id,plan.price_usd]),[['core',30],['pro',50]]);
     assert.equal((await fetch(url+'/studio',{redirect:'manual'})).status,303);
     assert.equal((await fetch(url+'/studio',{headers:{'X-Test-Role':'inactive'},redirect:'manual'})).headers.get('location'),
       '/?access=SUBSCRIPTION_REQUIRED');
-    const response=await fetch(url+'/api/snapshot',{headers:{'X-Test-Role':'subscriber'}});assert.equal(response.status,200);assert.deepEqual(await response.json(),expected);
+    const response=await fetch(url+'/api/snapshot',{headers:{'X-Test-Role':'subscriber'}});assert.equal(response.status,200);const proSnapshot=await response.json();
+    assert.deepEqual(proSnapshot.access,{plan_id:'pro',unlimited:false});assert.deepEqual(proSnapshot.capabilities,planFeatures('pro'));assert.deepEqual(proSnapshot.economics,expected.economics);
+    const coreSnapshot=await fetch(url+'/api/snapshot',{headers:{'X-Test-Role':'core'}}).then(value=>value.json());assert.equal(coreSnapshot.economics,null);
+    assert.equal(coreSnapshot.totals.observed_input_tokens,null);assert.deepEqual(coreSnapshot.attempts[0].metering,{execution_duration_ms:1000});
     assert.equal((await fetch(url+'/admin',{headers:{'X-Test-Role':'subscriber'},redirect:'manual'})).status,303);
     assert.equal((await fetch(url+'/api/admin/summary',{headers:{'X-Test-Role':'admin'}})).status,200);
     assert.equal((await fetch(url+'/api/admin/customers')).status,401);
     assert.equal((await fetch(url+'/api/admin/customers',{headers:{'X-Test-Role':'subscriber'}})).status,403);
     const customers=await fetch(url+'/api/admin/customers?q=waiting&status=none&limit=25&offset=0',{headers:{'X-Test-Role':'admin'}});
     assert.equal(customers.status,200);const customerPage=await customers.json();assert.equal(customerPage.total,1);
-    assert.deepEqual(customerPage.customers[0],{github_id:'2',login:'waiting-user',avatar_url:null,billing_provider:null,
-      subscription:{status:'none',active:false,current_period_end:null},updated_at:'2026-09-08T00:00:00.000Z'});
+    assert.deepEqual(customerPage.customers[0],{github_id:'2',login:'waiting-user',avatar_url:null,billing_provider:null,role:'customer',
+      subscription:subscriptionEntitlement(),updated_at:'2026-09-08T00:00:00.000Z'});
+    const adminCustomer=await fetch(url+'/api/admin/customers?q=owner',{headers:{'X-Test-Role':'admin'}}).then(value=>value.json());
+    assert.equal(adminCustomer.customers[0].role,'admin');assert.equal(adminCustomer.customers[0].subscription.unlimited,true);
     assert.equal(JSON.stringify(customerPage).includes('billing_subscription_id'),false);
     assert.equal((await fetch(url+'/api/admin/customers?limit=1000',{headers:{'X-Test-Role':'admin'}})).status,400);
     assert.equal((await fetch(url+'/api/snapshot',{method:'POST',headers:{'X-Test-Role':'subscriber',Origin:'http://127.0.0.1:4317',
@@ -91,9 +100,10 @@ test('Access store persists identity and applies webhook events idempotently',as
   try {const store=createAccessStore(root);await store.upsertIdentity({github_id:'42',login:'operator',avatar_url:null});
     assert.equal(store.entitlement('42').active,false);
     assert.deepEqual(await store.applySubscription({event_id:'evt_1',provider:'payapp',github_id:'42',customer_id:'merchant',subscription_id:'sub_1',
-      status:'active',current_period_end:123}),{changed:true});
+      status:'active',current_period_end:123,plan_id:'core'}),{changed:true});
     assert.deepEqual(await store.applySubscription({event_id:'evt_1',provider:'payapp',github_id:'42',customer_id:'merchant',subscription_id:'sub_1',
-      status:'active',current_period_end:123}),{changed:false});assert.equal(store.entitlement('42').active,true);
+      status:'active',current_period_end:123,plan_id:'core'}),{changed:false});assert.equal(store.entitlement('42').active,true);
+    assert.equal(store.entitlement('42').plan_id,'core');
   } finally {rmSync(parent,{recursive:true,force:true})}
 });
 
@@ -103,8 +113,19 @@ test('Access store migrates legacy Stripe-shaped records to provider-neutral bil
     stripe_subscription_id:null,subscription_status:null,current_period_end:null,updated_at:'2026-09-08T00:00:00.000Z'}},processed_webhook_ids:[]};
   writeFileSync(join(root,'access.json'),JSON.stringify(legacy));
   try {const store=createAccessStore(root),user=store.user('42');assert.equal(user.billing_provider,null);
-    assert.equal(user.billing_subscription_id,null);assert.equal(JSON.parse(readFileSync(join(root,'access.json'),'utf8')).schema_version,2);
+    assert.equal(user.billing_subscription_id,null);assert.equal(user.plan_id,null);assert.equal(JSON.parse(readFileSync(join(root,'access.json'),'utf8')).schema_version,3);
   } finally {rmSync(parent,{recursive:true,force:true})}
+});
+
+test('Access store migrates active v2 subscriptions and pending requests to Core',()=>{
+  const parent=mkdtempSync(join(tmpdir(),'eoduksini-access-v2-')),root=join(parent,'access');mkdirSync(root);
+  const v2={schema_version:2,users:{'42':{github_id:'42',login:'operator',avatar_url:null,billing_provider:'payapp',
+    billing_customer_id:'merchant',billing_subscription_id:'91',subscription_status:'active',current_period_end:null,
+    updated_at:'2026-09-08T00:00:00.000Z'}},processed_webhook_ids:[],billing_requests:{request:{request_id:'request',github_id:'42',
+    provider:'payapp',expected_price:42000,subscription_id:'91',status:'active',created_at:'2026-09-08T00:00:00.000Z',
+    updated_at:'2026-09-08T00:00:00.000Z'}}};writeFileSync(join(root,'access.json'),JSON.stringify(v2));
+  try {const store=createAccessStore(root);assert.equal(store.entitlement('42').plan_id,'core');assert.equal(store.billingRequest('request').plan_id,'core')}
+  finally {rmSync(parent,{recursive:true,force:true})}
 });
 
 test('GitHub callback creates an opaque server session and never exposes the provider token',async()=>{
@@ -117,7 +138,8 @@ test('GitHub callback creates an opaque server session and never exposes the pro
     assert.equal(authorize.searchParams.get('code_challenge_method'),'S256');
     const completed=await auth.complete({code:'temporary-code',state:stateValue});assert.doesNotMatch(completed.cookie,/provider-secret/);
     const request={headers:{cookie:completed.cookie.split(';')[0]}},session=auth.session(request);
-    assert.equal(session.user.login,'operator');assert.equal(session.admin,true);assert.equal(session.entitlement.active,false);
+    assert.equal(session.user.login,'operator');assert.equal(session.admin,true);assert.equal(session.entitlement.active,true);
+    assert.equal(session.entitlement.plan_id,'admin');assert.equal(session.entitlement.unlimited,true);
   } finally {rmSync(parent,{recursive:true,force:true})}
 });
 
@@ -126,14 +148,17 @@ test('PayApp checkout binds the GitHub identity and verified feedback grants the
   await store.upsertIdentity({github_id:'42',login:'operator',avatar_url:null});let requestBody;
   const fetchImpl=async(_url,options)=>{requestBody=Object.fromEntries(options.body);return new Response(
     'state=1&errorMessage=&errno=00000&rebill_no=91&payurl=https%3A%2F%2Fpayapp.kr%2Frequest-token',{status:200})};
-  try {const billing=createBilling({userId:'merchant',linkKey:'key',linkValue:'value',priceKrw:9900,planName:'Studio',cycleDay:'90',
+  try {const billing=createBilling({userId:'merchant',linkKey:'key',linkValue:'value',priceKrwByPlan:{core:42000,pro:70000},planName:'Studio',cycleDay:'90',
       expiresOn:'2030-12-31',origin:'https://studio.example.test',store,fetchImpl,requestId:()=> '11111111-1111-4111-8111-111111111111'});
-    const session={user:{github_id:'42'}};assert.equal(await billing.checkout(session,{phone:'010-1234-5678'}),'https://payapp.kr/request-token');
+    const session={user:{github_id:'42'}};await assert.rejects(()=>billing.checkout(session,{phone:'010-1234-5678',plan_id:'enterprise'}),/INVALID_PLAN/);
+    await assert.rejects(()=>billing.checkout({...session,admin:true,entitlement:adminEntitlement()},{phone:'010-1234-5678',plan_id:'core'}),/SUBSCRIPTION_ALREADY_ACTIVE/);
+    assert.equal(await billing.checkout(session,{phone:'010-1234-5678',plan_id:'core'}),'https://payapp.kr/request-token');
     assert.equal(requestBody.cmd,'rebillRegist');assert.equal(requestBody.var1,'42');assert.equal(requestBody.var2,'11111111-1111-4111-8111-111111111111');
-    assert.equal(requestBody.recvphone,'01012345678');assert.equal(requestBody.goodprice,'9900');
-    const feedback=new URLSearchParams({userid:'merchant',linkkey:'key',linkval:'value',price:'9900',var1:'42',
+    assert.equal(requestBody.recvphone,'01012345678');assert.equal(requestBody.goodprice,'42000');assert.equal(requestBody.goodname,'Studio Core');
+    const feedback=new URLSearchParams({userid:'merchant',linkkey:'key',linkval:'value',price:'42000',var1:'42',
       var2:'11111111-1111-4111-8111-111111111111',mul_no:'501',rebill_no:'91',pay_state:'4'});
     await billing.feedback(Buffer.from(feedback.toString()));assert.equal(store.entitlement('42').active,true);
+    assert.equal(store.entitlement('42').plan_id,'core');
     await billing.feedback(Buffer.from(feedback.toString()));assert.equal(store.entitlement('42').active,true);
     feedback.set('pay_state','70');await billing.feedback(Buffer.from(feedback.toString()));assert.equal(store.entitlement('42').status,'past_due');
   } finally {rmSync(parent,{recursive:true,force:true})}

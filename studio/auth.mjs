@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { adminEntitlement } from './plans.mjs';
 
 const token=bytes=>randomBytes(bytes).toString('base64url');
 const equal=(left,right)=>{const a=Buffer.from(left??''),b=Buffer.from(right??'');return a.length===b.length && timingSafeEqual(a,b)};
@@ -36,13 +37,14 @@ export function createAuth({clientId,clientSecret,origin,store,adminIds=[],fetch
     const id=token(32);sessions.set(id,{github_id:user.github_id,expires_at:now()+8*60*60_000});
     return {cookie:cookie(id,8*60*60),user};
   };
+  const isAdminId=githubId=>adminIds.some(id=>equal(String(id),String(githubId)));
   const session=request=>{
     const id=cookieValue(request,'eoduksini_session'),record=id?sessions.get(id):null;
     if(!record || record.expires_at<=now()) {if(id) sessions.delete(id);return null;}
     const user=store.user(record.github_id);if(!user) return null;
-    const entitlement=store.entitlement(record.github_id),admin=adminIds.some(id=>equal(String(id),user.github_id));
+    const admin=isAdminId(user.github_id),entitlement=admin?adminEntitlement():store.entitlement(record.github_id);
     return {user:{github_id:user.github_id,login:user.login,avatar_url:user.avatar_url},entitlement,admin};
   };
   const logout=request=>{const id=cookieValue(request,'eoduksini_session');if(id) sessions.delete(id);return cookie('',0)};
-  return {configured,begin,complete,session,logout};
+  return {configured,begin,complete,session,logout,isAdminId};
 }

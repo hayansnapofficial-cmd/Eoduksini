@@ -34,6 +34,7 @@ function renderSemantics(snapshot) {
 
 function render(snapshot) {
   const controller=snapshot.controller,ready=controller.status==='READY';
+  text('plan-access',snapshot.access?.unlimited?'ADMIN':(snapshot.access?.plan_id??'PLAN').toUpperCase());
   $('connection').className=`signal ${snapshot.configured?'ok':'error'}`;text('connection',snapshot.configured?'로컬 연결':'설정 필요');
   text('controller-title',snapshot.configured?controller.status:'Controller 미설정');
   text('controller-detail',snapshot.configured?`${controller.project_id} · ${controller.node_id}`:'--state-root에 Controller 상태 디렉터리를 지정해 실행하세요.');
@@ -41,14 +42,15 @@ function render(snapshot) {
   text('status-breakdown',Object.entries(snapshot.status_counts).map(([key,value])=>`${key} ${value}`).join(' · ')||'기록 없음');
   const holds=snapshot.totals.pending_attempts+Number(controller.recovery_required)+Number(controller.semantic_review_required)+Number(controller.owner_present);
   text('hold-count',number.format(holds));text('hold-detail',ready?'차단 없음':'확인 필요');
-  const tokens=snapshot.totals.observed_input_tokens+snapshot.totals.observed_output_tokens;
-  text('token-count',compact.format(tokens));text('token-detail',`입력 ${compact.format(snapshot.totals.observed_input_tokens)} · 출력 ${compact.format(snapshot.totals.observed_output_tokens)}`);
+  const metering=snapshot.capabilities?.advanced_metering,input=snapshot.totals.observed_input_tokens,output=snapshot.totals.observed_output_tokens;
+  text('token-count',metering?compact.format(input+output):'PRO');text('token-detail',metering?`입력 ${compact.format(input)} · 출력 ${compact.format(output)}`:'Pro 플랜에서 제공');
   text('journal-seq',controller.journal_seq??'—');text('journal-detail',controller.journal_bytes===null?'크기 미확인':`${compact.format(controller.journal_bytes)} bytes`);
   text('project',controller.project_id??'—');text('node',controller.node_id??'—');text('updated',new Date(snapshot.generated_at).toLocaleString('ko-KR'));
   renderAttempts(snapshot);renderSemantics(snapshot);
-  const econ=snapshot.economics;text('economics-state',econ?.status??'—');text('incomplete',econ?number.format(econ.incomplete_attempt_count):'—');
-  text('energy',econ?.observed_energy?`${number.format(econ.observed_energy.kwh)} kWh`:'미측정');
-  text('energy-cost',money(econ?.energy_cost));text('api-cost',money(econ?.estimated_api_counterfactual));
+  const econ=snapshot.economics,hasEconomics=snapshot.capabilities?.economics;$('economics-panel').classList.toggle('feature-locked',!hasEconomics);
+  text('economics-state',hasEconomics?(econ?.status??'—'):'PRO');text('incomplete',hasEconomics&&econ?number.format(econ.incomplete_attempt_count):'Pro 전용');
+  text('energy',hasEconomics&&econ?.observed_energy?`${number.format(econ.observed_energy.kwh)} kWh`:hasEconomics?'미측정':'잠김');
+  text('energy-cost',hasEconomics?money(econ?.energy_cost):'잠김');text('api-cost',hasEconomics?money(econ?.estimated_api_counterfactual):'잠김');
 }
 
 async function refresh() {

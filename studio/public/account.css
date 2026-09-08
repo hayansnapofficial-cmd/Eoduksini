@@ -5,6 +5,21 @@
   margin-top: 28px;
 }
 
+.section-heading h3 { margin: 6px 0 0; font-size: 24px; }
+.plan-picker { margin-top: 30px; padding-top: 26px; border-top: 1px solid var(--line); }
+.plan-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }
+.plan-option { display: grid; align-content: start; gap: 14px; min-height: 300px; padding: 22px; border: 1px solid #35404a; background: #10171c; }
+.plan-option.selected { border-color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber); }
+.plan-option h4 { margin: 0; font-size: 20px; }
+.plan-price { display: flex; align-items: baseline; gap: 6px; }
+.plan-price strong { font: 36px Consolas, monospace; color: var(--ink); }
+.plan-price span, .plan-option small { color: var(--muted); }
+.plan-option ul, #plan-detail ul { margin: 0; padding-left: 20px; color: #b7c0c7; line-height: 1.8; }
+.plan-select { align-self: end; min-height: 42px; margin-top: auto; border: 1px solid #48545d; background: #172027; color: var(--ink); cursor: pointer; }
+.plan-option.selected .plan-select { border-color: var(--amber); color: var(--amber); }
+
+@media (max-width: 680px) { .plan-grid { grid-template-columns: 1fr; } }
+
 .payment-field label {
   font-size: 14px;
   font-weight: 600;
