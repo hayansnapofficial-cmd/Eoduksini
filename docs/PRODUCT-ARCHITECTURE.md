@@ -43,3 +43,9 @@ Registry reads are available to organization members with an active Studio entit
 An organization owner or administrator may create a ten-minute, single-use enrollment token. The control plane stores only its SHA-256 digest and returns the token once. A customer-owned outbound Agent consumes it over HTTPS, receives a high-entropy Agent credential once, and stores that credential only in its private local state file. The server again stores only a digest.
 
 Authenticated heartbeat reports contain bounded platform, architecture, logical CPU, memory, GPU availability, and configured adapter identifiers. They do not grant task execution, model invocation, repository access, approval, locking, merge, or promotion authority. Online status means only that a valid heartbeat was accepted within 90 seconds. Production still requires transactional storage, credential rotation and revocation, rate limiting, an audit trail, and authenticated software distribution.
+
+## Orchestration profile slice
+
+Each organization may persist one revisioned profile with a Head AI and either `automatic` or `manual` role assignment mode. Automatic mode deliberately stores no preselected role assignments. Manual mode may bind planner, coder, reviewer, and validator roles to an eligible organization model and an active organization node whose reported adapters include that model's provider type.
+
+The server validates every referenced model, node, role capability, provider adapter, and organization boundary. A profile is routing configuration only: it cannot authorize model calls, task execution, writes, approvals, locks, merges, or promotion. Automatic recommendation generation and task-time enforcement remain the next integration step.

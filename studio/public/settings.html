@@ -22,4 +22,10 @@
         <button id="copy-token" class="secondary-action" type="button">토큰 복사</button><p>고객 노드에서 환경값 <code>EODUKSINI_ENROLLMENT_TOKEN</code>으로 전달한 뒤 Agent의 <code>enroll</code> 명령을 실행하세요.</p></div></div>
     <div id="nodes" class="node-list"></div>
   </section>
+  <section class="registry-panel profile-panel"><div class="panel-title"><div><p class="eyebrow">STEP 04</p><h2>Orchestration Profile</h2></div><span id="profile-revision">NEW</span></div>
+    <form id="profile-form"><div class="profile-top"><label>배정 방식<select id="profile-mode"><option value="automatic">자동 정책 · Profile 저장</option><option value="manual">직접 배정</option></select></label>
+      <label>Head AI<select id="head-model" required></select></label></div><div id="assignments" class="assignment-grid"></div>
+      <p class="profile-help">자동 배정은 실행 시점의 가용성과 정책을 사용합니다. 직접 배정은 역할 모델과 실행 노드를 고정합니다.</p><button class="primary-action" type="submit">Profile 저장</button></form>
+    <p id="profile-message" class="form-message" role="status"></p>
+  </section>
 </main><script type="module" src="/settings.js"></script></body></html>

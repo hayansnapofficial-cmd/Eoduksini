@@ -6,7 +6,7 @@ import { isProviderId } from './provider-catalog.mjs';
 
 const SUBSCRIPTION=new Set(['active','trialing','past_due','canceled','unpaid','incomplete','incomplete_expired','paused']);
 const PROVIDERS=new Set(['payapp','stripe']);
-const empty=()=>({schema_version:6,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{},provider_connections:{},models:{},node_enrollments:{},nodes:{}});
+const empty=()=>({schema_version:7,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{},provider_connections:{},models:{},node_enrollments:{},nodes:{},orchestration_profiles:{}});
 const validId=value=>typeof value==='string'&&/^[1-9][0-9]{0,31}$/.test(value);
 const validOrganizationId=value=>typeof value==='string'&&/^org-[1-9][0-9]{0,31}$/.test(value);
 const uuid='[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
@@ -46,19 +46,21 @@ function migrate(data) {
     data={...data,schema_version:4,organizations,memberships}}
   if(data?.schema_version===4)data={...data,schema_version:5,provider_connections:{},models:{}};
   if(data?.schema_version===5)data={...data,schema_version:6,node_enrollments:{},nodes:{}};
+  if(data?.schema_version===6)data={...data,schema_version:7,orchestration_profiles:{}};
   return data;
 }
 
 function validate(input) {
   const data=migrate(input);
-  check(data&&Object.keys(data).length===10&&data.schema_version===6&&data.users&&typeof data.users==='object'&&!Array.isArray(data.users)&&
+  check(data&&Object.keys(data).length===11&&data.schema_version===7&&data.users&&typeof data.users==='object'&&!Array.isArray(data.users)&&
     Object.keys(data.users).length<=10_000&&data.billing_requests&&typeof data.billing_requests==='object'&&!Array.isArray(data.billing_requests)&&
     Object.keys(data.billing_requests).length<=10_000&&data.organizations&&typeof data.organizations==='object'&&!Array.isArray(data.organizations)&&
     Object.keys(data.organizations).length<=10_000&&data.memberships&&typeof data.memberships==='object'&&!Array.isArray(data.memberships)&&
     Object.keys(data.memberships).length<=50_000&&data.provider_connections&&typeof data.provider_connections==='object'&&!Array.isArray(data.provider_connections)&&
     Object.keys(data.provider_connections).length<=50_000&&data.models&&typeof data.models==='object'&&!Array.isArray(data.models)&&
     Object.keys(data.models).length<=100_000&&data.node_enrollments&&typeof data.node_enrollments==='object'&&!Array.isArray(data.node_enrollments)&&
-    Object.keys(data.node_enrollments).length<=50_000&&data.nodes&&typeof data.nodes==='object'&&!Array.isArray(data.nodes)&&Object.keys(data.nodes).length<=50_000,
+    Object.keys(data.node_enrollments).length<=50_000&&data.nodes&&typeof data.nodes==='object'&&!Array.isArray(data.nodes)&&Object.keys(data.nodes).length<=50_000&&
+    data.orchestration_profiles&&typeof data.orchestration_profiles==='object'&&!Array.isArray(data.orchestration_profiles)&&Object.keys(data.orchestration_profiles).length<=10_000,
     'INVALID_ACCESS_STORE');
   check(Array.isArray(data.processed_webhook_ids)&&data.processed_webhook_ids.length<=1000&&
     data.processed_webhook_ids.every(id=>safeText(id,256))&&new Set(data.processed_webhook_ids).size===data.processed_webhook_ids.length,
@@ -106,6 +108,16 @@ function validate(input) {
       device&&Object.keys(device).length===2&&safeText(device.name,128)&&(device.memory_bytes===null||(Number.isSafeInteger(device.memory_bytes)&&device.memory_bytes>=0)))&&
     Array.isArray(node.adapters)&&node.adapters.length<=32&&new Set(node.adapters).size===node.adapters.length&&node.adapters.every(isProviderId)&&
     nullableText(node.last_seen_at,32)&&safeText(node.created_at,32)&&safeText(node.updated_at,32),'INVALID_ACCESS_STORE');
+  for(const [id,profile] of Object.entries(data.orchestration_profiles)){const head=data.models[profile?.head_model_id];check(profile&&Object.keys(profile).length===7&&
+    id===profile.organization_id&&validOrganizationId(id)&&data.organizations[id]&&['automatic','manual'].includes(profile.mode)&&
+    head?.organization_id===id&&head.status==='active'&&(head.role_capabilities.includes('head')||head.role_capabilities.includes('general'))&&
+    profile.assignments&&typeof profile.assignments==='object'&&!Array.isArray(profile.assignments)&&Object.keys(profile.assignments).length===4&&['planner','coder','reviewer','validator'].every(role=>Object.hasOwn(profile.assignments,role))&&
+    Number.isSafeInteger(profile.revision)&&profile.revision>=1&&safeText(profile.created_at,32)&&safeText(profile.updated_at,32),'INVALID_ACCESS_STORE');
+    for(const role of ['planner','coder','reviewer','validator']){const assignment=profile.assignments[role];if(profile.mode==='automatic')check(assignment===null,'INVALID_ACCESS_STORE');
+      else if(assignment!==null){const model=data.models[assignment?.model_id],node=data.nodes[assignment?.node_id],connection=data.provider_connections[model?.connection_id];
+        check(assignment&&Object.keys(assignment).length===2&&model?.organization_id===id&&model.status==='active'&&
+          (model.role_capabilities.includes(role)||model.role_capabilities.includes('general'))&&node?.organization_id===id&&node.status==='active'&&
+          node.adapters.includes(connection?.provider_id),'INVALID_ACCESS_STORE')}}}
   return structuredClone(data);
 }
 
@@ -120,7 +132,7 @@ export function createAccessStore(root) {
   const raw=()=>{check(lstatSync(file).size<=8*1024*1024,'ACCESS_STORE_TOO_LARGE');return JSON.parse(readFileSync(file,'utf8'))};
   const save=data=>{data=validate(data);const temporary=join(root,`.access-${randomUUID()}.tmp`);
     writeFileSync(temporary,JSON.stringify(data,null,2)+'\n',{encoding:'utf8',mode:0o600,flag:'wx'});renameSync(temporary,file)};
-  if(raw().schema_version!==6)save(migrate(raw()));
+  if(raw().schema_version!==7)save(migrate(raw()));
   const load=()=>validate(raw());let queue=Promise.resolve();
   const update=operation=>{const result=queue.then(()=>{const data=load(),value=operation(data);save(data);return value});queue=result.catch(()=>{});return result};
   return {
@@ -137,6 +149,22 @@ export function createAccessStore(root) {
     nodes(organizationId){const data=load();check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
       return Object.values(data.nodes).filter(value=>value.organization_id===organizationId).map(({credential_hash:_,...value})=>structuredClone(value))
         .sort((left,right)=>left.created_at.localeCompare(right.created_at)||left.node_id.localeCompare(right.node_id))},
+    orchestrationProfile(organizationId){const data=load();check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
+      return data.orchestration_profiles[organizationId]?structuredClone(data.orchestration_profiles[organizationId]):null},
+    saveOrchestrationProfile({organization_id,mode,head_model_id,assignments}){return update(data=>{check(validOrganizationId(organization_id)&&
+      data.organizations[organization_id]&&['automatic','manual'].includes(mode)&&assignments&&typeof assignments==='object'&&!Array.isArray(assignments)&&Object.keys(assignments).length===4&&
+      ['planner','coder','reviewer','validator'].every(role=>Object.hasOwn(assignments,role)),'INVALID_ORCHESTRATION_PROFILE');
+      const head=data.models[head_model_id];check(head?.organization_id===organization_id&&head.status==='active'&&
+        (head.role_capabilities.includes('head')||head.role_capabilities.includes('general')),'INVALID_ORCHESTRATION_PROFILE');
+      const normalized={};for(const role of ['planner','coder','reviewer','validator']){const assignment=assignments[role];
+        if(mode==='automatic'){check(assignment===null,'INVALID_ORCHESTRATION_PROFILE');normalized[role]=null;continue}
+        if(assignment===null){normalized[role]=null;continue}const model=data.models[assignment?.model_id],node=data.nodes[assignment?.node_id],connection=data.provider_connections[model?.connection_id];
+        check(assignment&&Object.keys(assignment).length===2&&model?.organization_id===organization_id&&model.status==='active'&&
+          (model.role_capabilities.includes(role)||model.role_capabilities.includes('general'))&&node?.organization_id===organization_id&&
+          node.status==='active'&&node.adapters.includes(connection?.provider_id),'INVALID_ORCHESTRATION_PROFILE');normalized[role]={model_id:model.model_id,node_id:node.node_id}}
+      const prior=data.orchestration_profiles[organization_id],now=new Date().toISOString();data.orchestration_profiles[organization_id]={organization_id,mode,
+        head_model_id,assignments:normalized,revision:(prior?.revision??0)+1,created_at:prior?.created_at??now,updated_at:now};
+      return structuredClone(data.orchestration_profiles[organization_id])})},
     createNodeEnrollment({organization_id,display_name,now=Date.now()}){return update(data=>{check(validOrganizationId(organization_id)&&
       data.organizations[organization_id]&&safeText(display_name,128)&&display_name.trim()===display_name&&Number.isSafeInteger(now)&&now>=0,'INVALID_NODE_ENROLLMENT');
       const enrollment_id=`enrollment-${randomUUID()}`,token=`enr_${randomBytes(32).toString('base64url')}`,created_at=new Date(now).toISOString();

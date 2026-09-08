@@ -121,7 +121,7 @@ test('Access store migrates legacy Stripe-shaped records to provider-neutral bil
   writeFileSync(join(root,'access.json'),JSON.stringify(legacy));
   try {const store=createAccessStore(root),user=store.user('42');assert.equal(user.billing_provider,null);
     assert.equal(user.billing_subscription_id,null);assert.equal(user.plan_id,null);assert.equal(store.organizationsForUser('42')[0].organization_id,'org-42');
-    const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,6);
+    const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,7);
     assert.deepEqual(migrated.provider_connections,{});assert.deepEqual(migrated.models,{});assert.deepEqual(migrated.nodes,{});
   } finally {rmSync(parent,{recursive:true,force:true})}
 });
@@ -142,7 +142,7 @@ test('Access store upgrades the live v4 shape without changing organization reco
   const parent=mkdtempSync(join(tmpdir(),'eoduksini-access-v4-')),root=join(parent,'access');mkdirSync(root);
   const v4={schema_version:4,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{}};
   writeFileSync(join(root,'access.json'),JSON.stringify(v4));
-  try {createAccessStore(root);const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,6);
+  try {createAccessStore(root);const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,7);
     assert.deepEqual(migrated.provider_connections,{});assert.deepEqual(migrated.models,{});assert.deepEqual(migrated.node_enrollments,{});assert.deepEqual(migrated.nodes,{})}
   finally {rmSync(parent,{recursive:true,force:true})}
 });
@@ -151,9 +151,16 @@ test('Access store upgrades the deployed v5 shape with empty node collections',(
   const parent=mkdtempSync(join(tmpdir(),'eoduksini-access-v5-')),root=join(parent,'access');mkdirSync(root);
   const v5={schema_version:5,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{},provider_connections:{},models:{}};
   writeFileSync(join(root,'access.json'),JSON.stringify(v5));
-  try {createAccessStore(root);const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,6);
-    assert.deepEqual(migrated.node_enrollments,{});assert.deepEqual(migrated.nodes,{})}
+  try {createAccessStore(root);const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,7);
+    assert.deepEqual(migrated.node_enrollments,{});assert.deepEqual(migrated.nodes,{});assert.deepEqual(migrated.orchestration_profiles,{})}
   finally {rmSync(parent,{recursive:true,force:true})}
+});
+
+test('Access store upgrades the deployed v6 shape with empty orchestration profiles',()=>{
+  const parent=mkdtempSync(join(tmpdir(),'eoduksini-access-v6-')),root=join(parent,'access');mkdirSync(root);
+  const v6={schema_version:6,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{},provider_connections:{},models:{},node_enrollments:{},nodes:{}};
+  writeFileSync(join(root,'access.json'),JSON.stringify(v6));try{createAccessStore(root);const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));
+    assert.equal(migrated.schema_version,7);assert.deepEqual(migrated.orchestration_profiles,{})}finally{rmSync(parent,{recursive:true,force:true})}
 });
 
 test('Node enrollment is single use and heartbeat stores bounded capabilities without bearer credentials',async()=>{
@@ -171,6 +178,21 @@ test('Node enrollment is single use and heartbeat stores bounded capabilities wi
     assert.equal(heartbeat.cpu_logical,24);assert.equal(heartbeat.last_seen_at,new Date(3000).toISOString());
     serialized=readFileSync(join(parent,'access','access.json'),'utf8');assert.equal(serialized.includes(enrolled.credential),false);
   } finally {rmSync(parent,{recursive:true,force:true})}
+});
+
+test('Orchestration profiles validate head authority, role capability, node adapter, and tenant ownership',async()=>{
+  const parent=mkdtempSync(join(tmpdir(),'eoduksini-profile-')),store=createAccessStore(join(parent,'access')),
+    capabilities={agent_version:'0.1.0',os:'linux',arch:'x64',cpu_logical:8,memory_bytes:8589934592,gpu_status:'unavailable',gpu_devices:[],adapters:['ollama']};
+  try{await store.upsertIdentity({github_id:'42',login:'owner',avatar_url:null});await store.upsertIdentity({github_id:'43',login:'other',avatar_url:null});
+    const connection=(await store.createProviderConnection({organization_id:'org-42',provider_id:'ollama',display_name:'Local'})).connection;
+    const model=(await store.createModel({organization_id:'org-42',connection_id:connection.connection_id,provider_model_id:'local-model',
+      display_name:'General model',role_capabilities:['head','general']})).model;
+    const token=await store.createNodeEnrollment({organization_id:'org-42',display_name:'Node'}),node=(await store.enrollNode({token:token.token,capabilities})).node;
+    const blank={planner:null,coder:null,reviewer:null,validator:null};const automatic=await store.saveOrchestrationProfile({organization_id:'org-42',mode:'automatic',head_model_id:model.model_id,assignments:blank});
+    assert.equal(automatic.revision,1);const manual=await store.saveOrchestrationProfile({organization_id:'org-42',mode:'manual',head_model_id:model.model_id,
+      assignments:{...blank,coder:{model_id:model.model_id,node_id:node.node_id}}});assert.equal(manual.revision,2);assert.equal(store.orchestrationProfile('org-42').assignments.coder.node_id,node.node_id);
+    await assert.rejects(()=>store.saveOrchestrationProfile({organization_id:'org-43',mode:'automatic',head_model_id:model.model_id,assignments:blank}),/INVALID_ORCHESTRATION_PROFILE/);
+  }finally{rmSync(parent,{recursive:true,force:true})}
 });
 
 test('Provider and model registry is tenant scoped, idempotent, and stores no credentials',async()=>{
@@ -223,6 +245,11 @@ test('Registry API derives organization from the session and restricts writes to
       body:JSON.stringify({capabilities:{...capabilities,cpu_logical:12}})});assert.equal(heartbeat.status,200);
     const nodes=await fetch(url+'/api/organization/nodes',{headers:{'X-Test-Role':'owner'}}).then(value=>value.json());assert.equal(nodes.nodes.length,1);
     assert.equal(nodes.nodes[0].cpu_logical,12);assert.equal(JSON.stringify(nodes).includes('credential'),false);
+    const assignments={planner:null,coder:null,reviewer:null,validator:null},profilePayload={mode:'automatic',head_model_id:(await modelResponse.clone().json()).model.model_id,assignments};
+    const deniedProfile=await fetch(url+'/api/organization/orchestration-profile',{method:'POST',headers:{...headers,'X-Test-Role':'member'},body:JSON.stringify(profilePayload)});
+    assert.equal(deniedProfile.status,403);const savedProfile=await fetch(url+'/api/organization/orchestration-profile',{method:'POST',headers,body:JSON.stringify(profilePayload)});
+    assert.equal(savedProfile.status,200);const profile=await fetch(url+'/api/organization/orchestration-profile',{headers:{'X-Test-Role':'owner'}}).then(value=>value.json());
+    assert.equal(profile.profile.mode,'automatic');assert.equal(profile.profile.organization_id,'org-42');
   } finally {await new Promise(resolveClose=>server.close(resolveClose));rmSync(parent,{recursive:true,force:true})}
 });
 
