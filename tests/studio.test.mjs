@@ -48,7 +48,8 @@ test('Studio server gates Studio by subscription and admin by role',async()=>{
   const auth={configured:true,session:request=>request.headers['x-test-role']==='admin'?administrator:
     request.headers['x-test-role']==='subscriber'?subscriber:request.headers['x-test-role']==='inactive'?inactive:null,
     begin:()=>'',complete:async()=>{},logout:()=>''};
-  const store={users:()=>[{subscription_status:'active'},{subscription_status:null}]};
+  const store={users:()=>[{github_id:'1',login:'member',avatar_url:null,billing_provider:'payapp',subscription_status:'active',current_period_end:null,updated_at:'2026-09-08T01:00:00.000Z'},
+    {github_id:'2',login:'waiting-user',avatar_url:null,billing_provider:null,subscription_status:null,current_period_end:null,updated_at:'2026-09-08T00:00:00.000Z'}]};
   const server=createStudioServer({stateRoot:resolve('fixture-state'),snapshot:()=>expected,auth,store});
   await new Promise((accept,reject)=>server.listen(0,'127.0.0.1',accept).once('error',reject));
   const {port}=server.address(),url=`http://127.0.0.1:${port}`;
@@ -61,6 +62,14 @@ test('Studio server gates Studio by subscription and admin by role',async()=>{
     const response=await fetch(url+'/api/snapshot',{headers:{'X-Test-Role':'subscriber'}});assert.equal(response.status,200);assert.deepEqual(await response.json(),expected);
     assert.equal((await fetch(url+'/admin',{headers:{'X-Test-Role':'subscriber'},redirect:'manual'})).status,303);
     assert.equal((await fetch(url+'/api/admin/summary',{headers:{'X-Test-Role':'admin'}})).status,200);
+    assert.equal((await fetch(url+'/api/admin/customers')).status,401);
+    assert.equal((await fetch(url+'/api/admin/customers',{headers:{'X-Test-Role':'subscriber'}})).status,403);
+    const customers=await fetch(url+'/api/admin/customers?q=waiting&status=none&limit=25&offset=0',{headers:{'X-Test-Role':'admin'}});
+    assert.equal(customers.status,200);const customerPage=await customers.json();assert.equal(customerPage.total,1);
+    assert.deepEqual(customerPage.customers[0],{github_id:'2',login:'waiting-user',avatar_url:null,billing_provider:null,
+      subscription:{status:'none',active:false,current_period_end:null},updated_at:'2026-09-08T00:00:00.000Z'});
+    assert.equal(JSON.stringify(customerPage).includes('billing_subscription_id'),false);
+    assert.equal((await fetch(url+'/api/admin/customers?limit=1000',{headers:{'X-Test-Role':'admin'}})).status,400);
     assert.equal((await fetch(url+'/api/snapshot',{method:'POST',headers:{'X-Test-Role':'subscriber',Origin:'http://127.0.0.1:4317',
       'X-Eoduksini-Request':'1'}})).status,405);
     assert.equal((await fetch(url+'/..%2fpackage.json')).status,404);

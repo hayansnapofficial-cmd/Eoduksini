@@ -31,6 +31,21 @@ const safeSession=value=>value?{authenticated:true,user:value.user,subscription:
 const body=async(request,limit)=>{const chunks=[];let length=0;for await(const chunk of request){length+=chunk.length;if(length>limit)throw new Error('BODY_TOO_LARGE');chunks.push(chunk)}return Buffer.concat(chunks)};
 const denied=(request,response,code)=>request.url.startsWith('/api/')?send(response,code==='ADMIN_REQUIRED'?403:401,failure(code)):
   redirect(response,'/?access='+encodeURIComponent(code));
+const SUBSCRIPTION_FILTERS=new Set(['all','none','active','trialing','past_due','canceled','unpaid','incomplete','incomplete_expired','paused']);
+const customerPage=(users,url)=>{
+  const q=(url.searchParams.get('q')??'').trim().toLocaleLowerCase('en-US'),status=url.searchParams.get('status')??'all';
+  const limit=Number(url.searchParams.get('limit')??50),offset=Number(url.searchParams.get('offset')??0);
+  if(q.length>128||!SUBSCRIPTION_FILTERS.has(status)||!Number.isSafeInteger(limit)||limit<1||limit>100||
+    !Number.isSafeInteger(offset)||offset<0||offset>10_000)throw new Error('INVALID_CUSTOMER_QUERY');
+  const filtered=users.filter(user=>{
+    const subscription=user.subscription_status??'none';
+    return (status==='all'||subscription===status)&&(!q||user.login.toLocaleLowerCase('en-US').includes(q)||user.github_id.includes(q));
+  }).sort((left,right)=>right.updated_at.localeCompare(left.updated_at)||left.github_id.localeCompare(right.github_id));
+  return {schema_version:1,total:filtered.length,offset,limit,customers:filtered.slice(offset,offset+limit).map(user=>({
+    github_id:user.github_id,login:user.login,avatar_url:user.avatar_url,billing_provider:user.billing_provider,
+    subscription:{status:user.subscription_status??'none',active:['active','trialing'].includes(user.subscription_status),
+      current_period_end:user.current_period_end},updated_at:user.updated_at}))};
+};
 
 export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=null,billing=null,store=null,origin='http://127.0.0.1:4317'}={}) {
   if(stateRoot!==null && (!isAbsolute(stateRoot) || resolve(stateRoot)!==stateRoot)) throw new Error('STATE_ROOT_MUST_BE_ABSOLUTE');
@@ -57,9 +72,10 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
       catch {send(response,400,failure('INVALID_PAYMENT_FEEDBACK'))}return;
     }
     if(publicAssets.has(pathname) && ['GET','HEAD'].includes(request.method)) {const value=publicAssets.get(pathname);send(response,200,value.body,value.type,head);return}
-    const needsSession=protectedAssets.has(pathname)||adminAssets.has(pathname)||['/api/snapshot','/api/checkout','/api/logout','/api/admin/summary'].includes(pathname);
+    const needsSession=protectedAssets.has(pathname)||adminAssets.has(pathname)||
+      ['/api/snapshot','/api/checkout','/api/logout','/api/admin/summary','/api/admin/customers'].includes(pathname);
     if(needsSession && !session) {denied(request,response,'LOGIN_REQUIRED');return}
-    if((adminAssets.has(pathname)||pathname==='/api/admin/summary') && !session.admin) {denied(request,response,'ADMIN_REQUIRED');return}
+    if((adminAssets.has(pathname)||pathname.startsWith('/api/admin/')) && !session.admin) {denied(request,response,'ADMIN_REQUIRED');return}
     if((pathname==='/studio'||pathname==='/app.js'||pathname==='/api/snapshot') && !session.entitlement.active) {denied(request,response,'SUBSCRIPTION_REQUIRED');return}
     if(request.method==='POST' && pathname!=='/api/payapp/feedback') {
       if(request.headers.origin!==origin || request.headers['x-eoduksini-request']!=='1') {send(response,403,failure('REQUEST_ORIGIN_REJECTED'));return}
@@ -73,6 +89,10 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
       const users=store?.users?.()??[],active=users.filter(user=>['active','trialing'].includes(user.subscription_status)).length;
       send(response,200,json({schema_version:1,total_users:users.length,active_subscriptions:active,
         subscription_counts:users.reduce((out,user)=>{const key=user.subscription_status??'none';out[key]=(out[key]??0)+1;return out},{})}),undefined,head);return;
+    }
+    if(pathname==='/api/admin/customers' && ['GET','HEAD'].includes(request.method)) {
+      try {send(response,200,json(customerPage(store?.users?.()??[],url)),undefined,head)}
+      catch {send(response,400,failure('INVALID_CUSTOMER_QUERY'),undefined,head)}return;
     }
     const value=protectedAssets.get(pathname)??adminAssets.get(pathname);
     if(value && ['GET','HEAD'].includes(request.method)) {send(response,200,value.body,value.type,head);return}
