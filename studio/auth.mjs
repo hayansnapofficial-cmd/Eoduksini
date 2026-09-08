@@ -42,8 +42,9 @@ export function createAuth({clientId,clientSecret,origin,store,adminIds=[],fetch
     const id=cookieValue(request,'eoduksini_session'),record=id?sessions.get(id):null;
     if(!record || record.expires_at<=now()) {if(id) sessions.delete(id);return null;}
     const user=store.user(record.github_id);if(!user) return null;
+    const organizations=store.organizationsForUser(record.github_id);if(organizations.length===0)return null;
     const admin=isAdminId(user.github_id),entitlement=admin?adminEntitlement():store.entitlement(record.github_id);
-    return {user:{github_id:user.github_id,login:user.login,avatar_url:user.avatar_url},entitlement,admin};
+    return {user:{github_id:user.github_id,login:user.login,avatar_url:user.avatar_url},organization:organizations[0],organizations,entitlement,admin};
   };
   const logout=request=>{const id=cookieValue(request,'eoduksini_session');if(id) sessions.delete(id);return cookie('',0)};
   return {configured,begin,complete,session,logout,isAdminId};

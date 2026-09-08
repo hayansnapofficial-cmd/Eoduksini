@@ -22,7 +22,8 @@ function showEntitlement(session){const entitlement=session.subscription,active=
   $('plan-title').textContent=active?`${entitlement.plan_name} 구독 활성`:'Studio 구독 필요';
   $('plan-detail').replaceChildren(document.createTextNode(active?`${entitlement.plan_name} 플랜 권한이 적용되었습니다.`:'Core 또는 Pro 플랜을 선택하세요.'))}
 async function load(){try{const [session,planData]=await Promise.all([fetch('/api/session').then(value=>value.json()),fetch('/api/plans').then(value=>value.json())]);
-  if(!session.authenticated){location.assign('/?access=LOGIN_REQUIRED');return}$('identity').textContent=`@${session.user.login}`;if(session.admin)$('admin-link').classList.remove('hidden');
+  if(!session.authenticated){location.assign('/?access=LOGIN_REQUIRED');return}$('identity').textContent=`@${session.user.login}`;
+  $('organization').textContent=session.organization?`${session.organization.name} · ${session.organization.role.toUpperCase()}`:'조직 연결 없음';if(session.admin)$('admin-link').classList.remove('hidden');
   catalog=planData.plans??[];const container=$('plans');container.replaceChildren(...catalog.map(planCard));showEntitlement(session);if(!session.subscription.active)selectPlan(catalog.some(plan=>plan.id==='core')?'core':catalog[0]?.id);
   const checkout=new URLSearchParams(location.search).get('checkout');if(checkout==='return')$('account-message').textContent='결제를 확인하고 있습니다. PayApp 서버 통보 반영 후 Studio가 열립니다.';
 }catch{$('account-message').textContent='계정 상태를 불러오지 못했습니다.'}}

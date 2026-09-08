@@ -5,8 +5,9 @@ import { isPaidPlan, subscriptionEntitlement } from './plans.mjs';
 
 const SUBSCRIPTION=new Set(['active','trialing','past_due','canceled','unpaid','incomplete','incomplete_expired','paused']);
 const PROVIDERS=new Set(['payapp','stripe']);
-const empty=()=>({schema_version:3,users:{},processed_webhook_ids:[],billing_requests:{}});
+const empty=()=>({schema_version:4,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{}});
 const validId=value=>typeof value==='string'&&/^[1-9][0-9]{0,31}$/.test(value);
+const validOrganizationId=value=>typeof value==='string'&&/^org-[1-9][0-9]{0,31}$/.test(value);
 const safeText=(value,max=256)=>typeof value==='string'&&value.length>0&&value.length<=max&&value.isWellFormed();
 const nullableText=(value,max=256)=>value===null||safeText(value,max);
 const check=(condition,reason)=>{if(!condition)throw new Error(reason)};
@@ -22,14 +23,21 @@ function migrate(data) {
     for(const [id,user] of Object.entries(data.users??{}))users[id]={...user,plan_id:['active','trialing'].includes(user.subscription_status)?'core':null};
     const billing_requests={};for(const [id,request] of Object.entries(data.billing_requests??{}))billing_requests[id]={...request,plan_id:'core'};
     data={...data,schema_version:3,users,billing_requests}}
+  if(data?.schema_version===3){const organizations={},memberships={};
+    for(const user of Object.values(data.users??{})){const organization_id=`org-${user.github_id}`,now=user.updated_at;
+      organizations[organization_id]={organization_id,name:`${user.login} Workspace`,slug:`github-${user.github_id}`,created_at:now,updated_at:now};
+      memberships[`${organization_id}:${user.github_id}`]={organization_id,github_id:user.github_id,role:'owner',created_at:now}}
+    data={...data,schema_version:4,organizations,memberships}}
   return data;
 }
 
 function validate(input) {
   const data=migrate(input);
-  check(data&&Object.keys(data).length===4&&data.schema_version===3&&data.users&&typeof data.users==='object'&&!Array.isArray(data.users)&&
+  check(data&&Object.keys(data).length===6&&data.schema_version===4&&data.users&&typeof data.users==='object'&&!Array.isArray(data.users)&&
     Object.keys(data.users).length<=10_000&&data.billing_requests&&typeof data.billing_requests==='object'&&!Array.isArray(data.billing_requests)&&
-    Object.keys(data.billing_requests).length<=10_000,'INVALID_ACCESS_STORE');
+    Object.keys(data.billing_requests).length<=10_000&&data.organizations&&typeof data.organizations==='object'&&!Array.isArray(data.organizations)&&
+    Object.keys(data.organizations).length<=10_000&&data.memberships&&typeof data.memberships==='object'&&!Array.isArray(data.memberships)&&
+    Object.keys(data.memberships).length<=50_000,'INVALID_ACCESS_STORE');
   check(Array.isArray(data.processed_webhook_ids)&&data.processed_webhook_ids.length<=1000&&
     data.processed_webhook_ids.every(id=>safeText(id,256))&&new Set(data.processed_webhook_ids).size===data.processed_webhook_ids.length,
     'INVALID_ACCESS_STORE');
@@ -44,6 +52,13 @@ function validate(input) {
     request.request_id===id&&validId(request.github_id)&&PROVIDERS.has(request.provider)&&Number.isSafeInteger(request.expected_price)&&
     request.expected_price>=0&&isPaidPlan(request.plan_id)&&nullableText(request.subscription_id,128)&&['pending','active','past_due','canceled'].includes(request.status)&&
     safeText(request.created_at,32)&&safeText(request.updated_at,32),'INVALID_ACCESS_STORE');
+  for(const [id,organization] of Object.entries(data.organizations))check(validOrganizationId(id)&&organization&&Object.keys(organization).length===5&&
+    organization.organization_id===id&&safeText(organization.name,128)&&safeText(organization.slug,128)&&
+    /^github-[1-9][0-9]{0,31}$/.test(organization.slug)&&safeText(organization.created_at,32)&&safeText(organization.updated_at,32),'INVALID_ACCESS_STORE');
+  for(const [id,membership] of Object.entries(data.memberships))check(membership&&Object.keys(membership).length===4&&
+    id===`${membership.organization_id}:${membership.github_id}`&&validOrganizationId(membership.organization_id)&&validId(membership.github_id)&&
+    data.organizations[membership.organization_id]&&data.users[membership.github_id]&&['owner','admin','member'].includes(membership.role)&&
+    safeText(membership.created_at,32),'INVALID_ACCESS_STORE');
   return structuredClone(data);
 }
 
@@ -58,17 +73,23 @@ export function createAccessStore(root) {
   const raw=()=>{check(lstatSync(file).size<=8*1024*1024,'ACCESS_STORE_TOO_LARGE');return JSON.parse(readFileSync(file,'utf8'))};
   const save=data=>{data=validate(data);const temporary=join(root,`.access-${randomUUID()}.tmp`);
     writeFileSync(temporary,JSON.stringify(data,null,2)+'\n',{encoding:'utf8',mode:0o600,flag:'wx'});renameSync(temporary,file)};
-  if(raw().schema_version!==3)save(migrate(raw()));
+  if(raw().schema_version!==4)save(migrate(raw()));
   const load=()=>validate(raw());let queue=Promise.resolve();
   const update=operation=>{const result=queue.then(()=>{const data=load(),value=operation(data);save(data);return value});queue=result.catch(()=>{});return result};
   return {
     user:id=>load().users[String(id)]??null,users:()=>Object.values(load().users).map(structuredClone),
+    organizations:()=>Object.values(load().organizations).map(structuredClone),
+    organizationsForUser(id){const data=load(),githubId=String(id);return Object.values(data.memberships).filter(value=>value.github_id===githubId)
+      .map(value=>({...structuredClone(data.organizations[value.organization_id]),role:value.role})).sort((left,right)=>left.organization_id.localeCompare(right.organization_id))},
     billingRequest:id=>load().billing_requests[String(id)]??null,
     upsertIdentity(identity){return update(data=>{const id=String(identity.github_id),prior=data.users[id];check(validId(id)&&safeText(identity.login,128),'INVALID_GITHUB_IDENTITY');
       data.users[id]={github_id:id,login:identity.login,avatar_url:identity.avatar_url??null,billing_provider:prior?.billing_provider??null,
         billing_customer_id:prior?.billing_customer_id??null,billing_subscription_id:prior?.billing_subscription_id??null,
         subscription_status:prior?.subscription_status??null,current_period_end:prior?.current_period_end??null,updated_at:new Date().toISOString(),
         plan_id:prior?.plan_id??null};
+      const organization_id=`org-${id}`,membership_id=`${organization_id}:${id}`;if(!data.organizations[organization_id]){
+        const now=data.users[id].updated_at;data.organizations[organization_id]={organization_id,name:`${identity.login} Workspace`,slug:`github-${id}`,created_at:now,updated_at:now}}
+      if(!data.memberships[membership_id])data.memberships[membership_id]={organization_id,github_id:id,role:'owner',created_at:data.users[id].updated_at};
       return structuredClone(data.users[id])})},
     createBillingRequest(request){return update(data=>{check(safeText(request.request_id,128)&&validId(String(request.github_id))&&
       PROVIDERS.has(request.provider)&&Number.isSafeInteger(request.expected_price)&&request.expected_price>=0&&isPaidPlan(request.plan_id)&&
