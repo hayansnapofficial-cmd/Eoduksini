@@ -57,13 +57,26 @@ Controller 상태와 별도의 접근 데이터 디렉터리를 절대 경로로
 npm run studio -- --state-root /absolute/controller-state --access-root /absolute/eoduksini-access
 ```
 
-`--access-root`는 GitHub 계정, 결제 공급자·정기결제 번호, 내부 결제 요청과 서버 통보 중복 처리 ID만 저장합니다. 휴대전화 번호, OAuth provider token, Client Secret, 페이앱 연동 KEY/VALUE는 저장하지 않습니다.
+`--access-root`는 GitHub 계정, 조직, Provider·Model 메타데이터, Node capability, 토큰 해시, 결제 공급자·정기결제 번호, 내부 결제 요청과 서버 통보 중복 처리 ID를 저장합니다. 휴대전화 번호, OAuth provider token, Client Secret, 페이앱 연동 KEY/VALUE, 원문 Node 등록·Agent 토큰은 저장하지 않습니다.
+
+## 고객 Node Agent 등록
+
+조직 owner/admin이 `/settings`에서 10분짜리 등록 토큰을 발급합니다. 고객 노드에서는 토큰을 환경값으로 전달하고, 저장소 밖의 새 절대 경로에 Agent 상태를 만듭니다.
+
+```sh
+EODUKSINI_ENROLLMENT_TOKEN=발급받은값 npm run agent -- enroll https://eoduksinistudio.com /absolute/private-agent-state
+npm run agent -- run /absolute/private-agent-state
+```
+
+Windows PowerShell에서는 `$env:EODUKSINI_ENROLLMENT_TOKEN='발급받은값'`으로 설정한 뒤 같은 `npm run agent -- enroll ...` 명령을 실행합니다. `run`은 30초마다 outbound HTTPS heartbeat를 보냅니다. `EODUKSINI_AGENT_ADAPTERS=ollama,openai-compatible`처럼 이 노드에 실제 설정된 Adapter ID만 선택적으로 보고할 수 있습니다. Agent 상태 파일에는 장기 자격증명이 있으므로 공유·동기화 폴더나 저장소 안에 두지 않습니다.
 
 ## 접근 규칙
 
 - `/`: 공개
 - `/account`: 로그인 필요
 - `/studio`, `/api/snapshot`: 로그인과 활성 Core/Pro 구독 또는 관리자 권한 필요. 고급 계측·경제성 필드는 Pro와 관리자에게만 반환
+- `/settings`, `/api/organization/*`: 활성 구독 조직의 설정·조회. Provider·Model·등록 토큰 쓰기는 owner/admin만 허용
+- `/api/agent/enroll`, `/api/agent/heartbeat`: 브라우저 세션 대신 일회성 등록 토큰 또는 Agent Bearer 자격증명 사용
 - `/admin`, `/api/admin/summary`: 로그인과 관리자 GitHub ID 필요
 - `/api/payapp/feedback`: 공개 HTTPS 서버 통보 전용, 폼 본문과 결제 계약 검증
 - 나머지 상태 변경 API: 동일 Origin과 `X-Eoduksini-Request: 1`을 함께 검사
