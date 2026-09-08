@@ -106,7 +106,8 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
     if(publicAssets.has(pathname) && ['GET','HEAD'].includes(request.method)) {const value=publicAssets.get(pathname);send(response,200,value.body,value.type,head);return}
     const needsSession=protectedAssets.has(pathname)||adminAssets.has(pathname)||
       ['/api/snapshot','/api/organization','/api/checkout','/api/logout','/api/admin/summary','/api/admin/customers'].includes(pathname);
-    const organizationApi=['/api/organization/providers','/api/organization/models','/api/organization/nodes','/api/organization/node-enrollments'].includes(pathname);
+    const organizationApi=['/api/organization/providers','/api/organization/models','/api/organization/nodes','/api/organization/node-enrollments',
+      '/api/organization/orchestration-profile'].includes(pathname);
     if((needsSession||organizationApi) && !session) {denied(request,response,'LOGIN_REQUIRED');return}
     if((adminAssets.has(pathname)||pathname.startsWith('/api/admin/')) && !session.admin) {denied(request,response,'ADMIN_REQUIRED');return}
     if((pathname==='/studio'||pathname==='/app.js'||pathname==='/settings'||pathname==='/settings.js'||pathname==='/settings.css'||pathname==='/api/snapshot'||organizationApi) && !session.entitlement.active) {denied(request,response,'SUBSCRIPTION_REQUIRED');return}
@@ -122,6 +123,14 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
       models:store.models(session.organization.organization_id)}),undefined,head);return}
     if(pathname==='/api/organization/nodes' && ['GET','HEAD'].includes(request.method)) {send(response,200,json({schema_version:1,
       nodes:store.nodes(session.organization.organization_id).map(value=>publicNode(value))}),undefined,head);return}
+    if(pathname==='/api/organization/orchestration-profile' && ['GET','HEAD'].includes(request.method)) {send(response,200,json({schema_version:1,
+      profile:store.orchestrationProfile(session.organization.organization_id)}),undefined,head);return}
+    if(pathname==='/api/organization/orchestration-profile' && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){
+      send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}try{const payload=await jsonBody(request);
+        if(!exact(payload,['mode','head_model_id','assignments']))throw new Error('INVALID_ORCHESTRATION_PROFILE');send(response,200,json({schema_version:1,
+          profile:await store.saveOrchestrationProfile({organization_id:session.organization.organization_id,...payload})}))}
+      catch(error){const code=['INVALID_ORCHESTRATION_PROFILE','INVALID_CONTENT_TYPE','BODY_TOO_LARGE'].includes(error?.message)?error.message:'INVALID_ORCHESTRATION_PROFILE';
+        send(response,400,failure(code))}return}
     if(pathname==='/api/organization/node-enrollments' && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){
       send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}try{const payload=await jsonBody(request,1024);
         if(!exact(payload,['display_name']))throw new Error('INVALID_NODE_ENROLLMENT');send(response,200,json({schema_version:1,
