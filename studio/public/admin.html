@@ -1,2 +1,28 @@
-<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>관리자 · 어둑시니</title><link rel="stylesheet" href="/styles.css"></head>
-<body><header class="site-nav"><a class="wordmark" href="/">어둑시니 <span>ADMIN</span></a><nav><a class="nav-link" href="/account">내 계정</a><a class="nav-link" href="/studio">Studio</a></nav></header><main class="admin-main"><div class="account-heading"><p class="eyebrow">ADMIN CONTROL</p><h1>운영 대시보드</h1><p class="muted">회원과 구독 권한의 집계 상태입니다.</p></div><section class="metrics admin-metrics"><article><span>전체 회원</span><strong id="users">—</strong><small>GitHub 인증 계정</small></article><article><span>활성 구독</span><strong id="active">—</strong><small>active + trialing</small></article><article><span>전환율</span><strong id="conversion">—</strong><small>활성 / 전체</small></article><article><span>접근 정책</span><strong>DENY</strong><small>기본 거부</small></article></section><section class="panel admin-panel"><div class="panel-head"><div><p class="eyebrow">SUBSCRIPTIONS</p><h3>구독 상태 분포</h3></div></div><div id="subscription-list" class="admin-list"></div><p id="admin-message" class="form-message"></p></section></main><script type="module" src="/admin.js"></script></body></html>
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>고객 관리 · 어둑시니</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="site-nav"><a class="wordmark" href="/">어둑시니 <span>ADMIN</span></a><nav><a class="nav-link" href="/account">내 계정</a><a class="nav-link" href="/studio">Studio</a></nav></header>
+  <main class="admin-main">
+    <div class="admin-heading"><div><p class="eyebrow">CUSTOMER OPERATIONS</p><h1>고객 관리</h1><p class="muted">가입 계정과 구독 접근 상태를 확인합니다.</p></div><button id="refresh" class="secondary-action" type="button">새로고침</button></div>
+    <section class="metrics admin-metrics" aria-label="고객 지표">
+      <article><span>전체 회원</span><strong id="users">—</strong><small>GitHub 인증 계정</small></article>
+      <article><span>활성 구독</span><strong id="active">—</strong><small>Studio 접근 가능</small></article>
+      <article><span>전환율</span><strong id="conversion">—</strong><small>활성 / 전체</small></article>
+      <article><span>확인 필요</span><strong id="attention">—</strong><small>결제 확인 대상</small></article>
+    </section>
+    <section class="panel customer-panel">
+      <div class="customer-toolbar"><div><p class="eyebrow">MEMBERS</p><h2>회원 목록 <span id="result-count">—</span></h2></div><form id="filters" class="customer-filters" role="search"><label><span class="sr-only">고객 검색</span><input id="query" type="search" maxlength="128" autocomplete="off" placeholder="GitHub 계정 또는 ID 검색"></label><label><span class="sr-only">구독 상태</span><select id="status"><option value="all">모든 상태</option><option value="active">활성</option><option value="trialing">체험</option><option value="past_due">결제 확인</option><option value="canceled">해지</option><option value="none">미구독</option></select></label><button type="submit">검색</button></form></div>
+      <div class="customer-table-wrap"><table class="customer-table"><thead><tr><th>고객</th><th>구독 상태</th><th>Studio 접근</th><th>결제</th><th>최근 갱신</th></tr></thead><tbody id="customers"><tr><td colspan="5" class="empty">고객 정보를 불러오는 중입니다.</td></tr></tbody></table></div>
+      <div class="customer-footer"><p id="admin-message" class="form-message" role="status"></p><div class="pagination"><button id="previous" type="button">이전</button><span id="page">—</span><button id="next" type="button">다음</button></div></div>
+    </section>
+  </main>
+  <script type="module" src="/admin.js"></script>
+</body>
+</html>
