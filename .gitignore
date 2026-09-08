@@ -3,3 +3,6 @@ dist/
 *.log
 __pycache__/
 .eoduksini/baseline.json
+.env
+.env.*
+!.env.example

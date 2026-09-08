@@ -23,7 +23,7 @@ npm run build
 npm run studio -- --state-root /absolute/path/to/controller-state
 ```
 
-Studio는 `http://127.0.0.1:4317`에서만 대기하며 Controller 상태, 작업 시도, Semantic 충돌·불확실성, M3 계측·경제성 집계를 표시합니다. 공개 웹과 GitHub 로그인·Stripe 구독·내 계정·관리자 대시보드를 함께 제공하며, 활성 구독이 확인된 사용자만 Studio에 들어갈 수 있습니다. 인증과 결제 설정은 [웹 접근 설정](docs/WEB-ACCESS.md)을 따릅니다.
+Studio는 `http://127.0.0.1:4317`에서만 대기하며 Controller 상태, 작업 시도, Semantic 충돌·불확실성, M3 계측·경제성 집계를 표시합니다. 공개 웹과 GitHub 로그인·페이앱 정기결제·내 계정·관리자 대시보드를 함께 제공하며, 서버가 검증한 활성 구독 사용자만 Studio에 들어갈 수 있습니다. 인증과 결제 설정은 [웹 접근 설정](docs/WEB-ACCESS.md)을 따릅니다.
 
 브라우저에 전체 저널이나 명령·환경·저장소 경로를 전달하지 않으며 실행·승인·복구 API도 제공하지 않습니다. 인증 환경값 없이 `npm run studio`를 실행하면 공개 화면만 미리 볼 수 있습니다. 포트는 `--port 4318`처럼 바꿀 수 있습니다.
 

@@ -1,41 +1,51 @@
-import Stripe from 'stripe';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 
-const periodEnd=subscription=>subscription.current_period_end??(Math.max(0,...(subscription.items?.data??[])
-  .map(item=>item.current_period_end??0))||null);
+const API_URL='https://api.payapp.kr/oapi/apiLoad.html';
+const ACTIVE_STATE='4',CANCELED_STATES=new Set(['8','9','16','31','32','64']),HOLD_STATES=new Set(['70','71','99']);
+const safeEqual=(left,right)=>{const a=Buffer.from(String(left??'')),b=Buffer.from(String(right??''));return a.length===b.length&&timingSafeEqual(a,b)};
+const validPhone=value=>typeof value==='string'&&/^01(?:0|1|[6-9])[0-9]{7,8}$/.test(value.replace(/[^0-9]/g,''));
+const validDate=value=>typeof value==='string'&&/^20[0-9]{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])$/.test(value);
+const validPayUrl=value=>{try{const url=new URL(value);return url.protocol==='https:'&&(url.hostname==='payapp.kr'||url.hostname.endsWith('.payapp.kr'))}catch{return false}};
+const parseForm=text=>{const out={};for(const [key,value] of new URLSearchParams(text)){if(Object.hasOwn(out,key))throw new Error('DUPLICATE_PAYAPP_FIELD');out[key]=value}return out};
 
-export function createBilling({secretKey,webhookSecret,priceId,origin,store,stripeClient=null}={}) {
-  const configured=Boolean(secretKey && webhookSecret && priceId && origin && store);
-  const stripe=stripeClient??(secretKey?new Stripe(secretKey):null);
-  const checkout=async session=>{
-    if(!configured) throw new Error('BILLING_NOT_CONFIGURED');
-    if(store.entitlement(session.user.github_id).active) throw new Error('SUBSCRIPTION_ALREADY_ACTIVE');
-    const user=store.user(session.user.github_id),metadata={github_user_id:user.github_id};
-    const value=await stripe.checkout.sessions.create({mode:'subscription',line_items:[{price:priceId,quantity:1}],
-      success_url:origin+'/account?checkout=success',cancel_url:origin+'/account?checkout=cancelled',client_reference_id:user.github_id,
-      ...(user.stripe_customer_id?{customer:user.stripe_customer_id}:{}),metadata,subscription_data:{metadata}});
-    return value.url;
+export function createBilling({userId,linkKey,linkValue,priceKrw,planName='Eoduksini Studio',cycleDay='90',expiresOn,
+  origin,store,fetchImpl=fetch,requestId=()=>randomUUID()}={}) {
+  const price=Number(priceKrw),configured=Boolean(userId&&linkKey&&linkValue&&Number.isSafeInteger(price)&&price>=1000&&
+    typeof planName==='string'&&planName.length>0&&planName.length<=128&&/^(?:[1-9]|[12][0-9]|3[01]|90)$/.test(String(cycleDay))&&
+    validDate(expiresOn)&&typeof origin==='string'&&origin.startsWith('https://')&&store);
+  const checkout=async(session,{phone}={})=>{
+    if(!configured)throw new Error('BILLING_NOT_CONFIGURED');
+    if(store.entitlement(session.user.github_id).active)throw new Error('SUBSCRIPTION_ALREADY_ACTIVE');
+    if(!validPhone(phone))throw new Error('INVALID_PHONE');
+    const id=requestId(),githubId=String(session.user.github_id);
+    if(!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))throw new Error('INVALID_BILLING_REQUEST_ID');
+    await store.createBillingRequest({request_id:id,github_id:githubId,provider:'payapp',expected_price:price});
+    const payload=new URLSearchParams({cmd:'rebillRegist',userid:userId,goodname:planName,goodprice:String(price),
+      recvphone:phone.replace(/[^0-9]/g,''),rebillCycleType:'Month',rebillCycleMonth:String(cycleDay),rebillExpire:expiresOn,
+      feedbackurl:origin+'/api/payapp/feedback',failurl:origin+'/api/payapp/feedback',returnurl:origin+'/account?checkout=return',
+      var1:githubId,var2:id,smsuse:'n',openpaytype:'card'});
+    const response=await fetchImpl(API_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},
+      body:payload,signal:AbortSignal.timeout(10_000)});
+    if(!response.ok)throw new Error('PAYAPP_REQUEST_FAILED');
+    const result=parseForm(await response.text());
+    if(result.state!=='1'||!/^\d+$/.test(result.rebill_no??'')||!validPayUrl(result.payurl))throw new Error('PAYAPP_REQUEST_FAILED');
+    await store.attachBillingSubscription({request_id:id,subscription_id:result.rebill_no});
+    return result.payurl;
   };
-  const portal=async session=>{
-    if(!configured) throw new Error('BILLING_NOT_CONFIGURED');const user=store.user(session.user.github_id);
-    if(!user?.stripe_customer_id) throw new Error('BILLING_CUSTOMER_NOT_FOUND');
-    return (await stripe.billingPortal.sessions.create({customer:user.stripe_customer_id,return_url:origin+'/account'})).url;
+  const feedback=async payload=>{
+    if(!configured)throw new Error('BILLING_NOT_CONFIGURED');
+    const value=parseForm(payload.toString('utf8')),state=String(value.pay_state??'');
+    if(!safeEqual(value.userid,userId)||!safeEqual(value.linkkey,linkKey)||!safeEqual(value.linkval,linkValue)||
+      String(value.price)!==String(price)||!/^\d+$/.test(value.var1??'')||!/^[0-9a-f-]{36}$/i.test(value.var2??'')||
+      !/^\d+$/.test(value.mul_no??'')||!/^\d+$/.test(value.rebill_no??''))throw new Error('INVALID_PAYAPP_FEEDBACK');
+    const request=store.billingRequest(value.var2);
+    if(!request||request.provider!=='payapp'||request.github_id!==value.var1||request.expected_price!==price||
+      (request.subscription_id!==null&&request.subscription_id!==value.rebill_no))throw new Error('INVALID_PAYAPP_FEEDBACK');
+    const status=state===ACTIVE_STATE?'active':HOLD_STATES.has(state)?'past_due':CANCELED_STATES.has(state)?'canceled':null;
+    if(status!==null)await store.applySubscription({event_id:`payapp:${value.mul_no}:${state}:${value.rebill_no}:${value.var2}`,
+      provider:'payapp',github_id:value.var1,customer_id:userId,subscription_id:value.rebill_no,status,current_period_end:null,
+      request_id:value.var2});
+    return {handled:status!==null};
   };
-  const webhook=async(body,signature)=>{
-    if(!configured || typeof signature!=='string') throw new Error('BILLING_NOT_CONFIGURED');
-    const event=stripe.webhooks.constructEvent(body,signature,webhookSecret);
-    let subscription=null,githubId=null;
-    if(event.type==='checkout.session.completed') {
-      const checkoutSession=event.data.object;githubId=checkoutSession.metadata?.github_user_id??checkoutSession.client_reference_id;
-      if(typeof checkoutSession.subscription==='string') subscription=await stripe.subscriptions.retrieve(checkoutSession.subscription);
-      else subscription=checkoutSession.subscription;
-    } else if(['customer.subscription.created','customer.subscription.updated','customer.subscription.deleted'].includes(event.type)) {
-      subscription=event.data.object;githubId=subscription.metadata?.github_user_id;
-    } else return {handled:false};
-    if(!subscription || !githubId) return {handled:false};
-    const customerId=typeof subscription.customer==='string'?subscription.customer:subscription.customer?.id;
-    await store.applySubscription({event_id:event.id,github_id:String(githubId),customer_id:customerId,
-      subscription_id:subscription.id,status:subscription.status,current_period_end:periodEnd(subscription)});
-    return {handled:true};
-  };
-  return {configured,checkout,portal,webhook};
+  return {configured,checkout,feedback};
 }
