@@ -77,6 +77,6 @@ M3의 사후 증거 연결, fixture 검증과 `m2` 전력 센서 가용성 점�
 
 M3는 exact 결과 digest에 독립 검수와 명시적 사용자 채택 사건을 결합할 수 있습니다. 가격과 전력 근거는 권한 있는 관측이 제공되기 전까지 미관측 상태로 유지합니다.
 
-[소유권 경계](docs/BOUNDARY.md) · [웹 접근 설정](docs/WEB-ACCESS.md) · [로컬 Controller 운영](docs/LOCAL-CONTROLLER.md) · [Controller 계측](docs/CONTROLLER-METERING.md) · [V2 계획](docs/V2-DECISIONS.md) · [검증](docs/VERIFICATION.md)
+[제품 아키텍처](docs/PRODUCT-ARCHITECTURE.md) · [소유권 경계](docs/BOUNDARY.md) · [웹 접근 설정](docs/WEB-ACCESS.md) · [로컬 Controller 운영](docs/LOCAL-CONTROLLER.md) · [Controller 계측](docs/CONTROLLER-METERING.md) · [V2 계획](docs/V2-DECISIONS.md) · [검증](docs/VERIFICATION.md)
 
 아직 오프라인 수렴 전체, DB 통합 승격, 실제 생산 프로젝트 실증까지 완료된 제품은 아닙니다.

@@ -27,13 +27,14 @@ const send=(response,status,body,type='application/json; charset=utf-8',head=fal
 };
 const failure=code=>json({schema_version:1,status:'ERROR',code});
 const redirect=(response,location,headers={})=>{response.writeHead(303,{...securityHeaders,...headers,Location:location,'Content-Length':0});response.end()};
-const safeSession=value=>value?{authenticated:true,user:value.user,subscription:value.entitlement,admin:value.admin}:
-  {authenticated:false,user:null,subscription:subscriptionEntitlement(),admin:false};
+const safeSession=value=>value?{authenticated:true,user:value.user,organization:value.organization,organizations:value.organizations,
+  subscription:value.entitlement,admin:value.admin}:
+  {authenticated:false,user:null,organization:null,organizations:[],subscription:subscriptionEntitlement(),admin:false};
 const body=async(request,limit)=>{const chunks=[];let length=0;for await(const chunk of request){length+=chunk.length;if(length>limit)throw new Error('BODY_TOO_LARGE');chunks.push(chunk)}return Buffer.concat(chunks)};
 const denied=(request,response,code)=>request.url.startsWith('/api/')?send(response,code==='ADMIN_REQUIRED'?403:401,failure(code)):
   redirect(response,'/?access='+encodeURIComponent(code));
 const SUBSCRIPTION_FILTERS=new Set(['all','none','active','trialing','past_due','canceled','unpaid','incomplete','incomplete_expired','paused']);
-const customerPage=(users,url,isAdminId=()=>false)=>{
+const customerPage=(users,url,isAdminId=()=>false,organizationsForUser=()=>[])=>{
   const q=(url.searchParams.get('q')??'').trim().toLocaleLowerCase('en-US'),status=url.searchParams.get('status')??'all';
   const limit=Number(url.searchParams.get('limit')??50),offset=Number(url.searchParams.get('offset')??0);
   if(q.length>128||!SUBSCRIPTION_FILTERS.has(status)||!Number.isSafeInteger(limit)||limit<1||limit>100||
@@ -45,7 +46,9 @@ const customerPage=(users,url,isAdminId=()=>false)=>{
   return {schema_version:2,total:filtered.length,offset,limit,customers:filtered.slice(offset,offset+limit).map(user=>({
     github_id:user.github_id,login:user.login,avatar_url:user.avatar_url,billing_provider:user.billing_provider,
     role:isAdminId(user.github_id)?'admin':'customer',subscription:isAdminId(user.github_id)?adminEntitlement():subscriptionEntitlement({
-      status:user.subscription_status??'none',plan_id:user.plan_id??null,current_period_end:user.current_period_end}),updated_at:user.updated_at}))};
+      status:user.subscription_status??'none',plan_id:user.plan_id??null,current_period_end:user.current_period_end}),
+    organizations:organizationsForUser(user.github_id).map(value=>({organization_id:value.organization_id,name:value.name,role:value.role})),
+    updated_at:user.updated_at}))};
 };
 const projectSnapshot=(value,entitlement)=>{
   const features=entitlement.features??{};if(features.advanced_metering&&features.economics&&features.review_and_adoption)
@@ -83,7 +86,7 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
     }
     if(publicAssets.has(pathname) && ['GET','HEAD'].includes(request.method)) {const value=publicAssets.get(pathname);send(response,200,value.body,value.type,head);return}
     const needsSession=protectedAssets.has(pathname)||adminAssets.has(pathname)||
-      ['/api/snapshot','/api/checkout','/api/logout','/api/admin/summary','/api/admin/customers'].includes(pathname);
+      ['/api/snapshot','/api/organization','/api/checkout','/api/logout','/api/admin/summary','/api/admin/customers'].includes(pathname);
     if(needsSession && !session) {denied(request,response,'LOGIN_REQUIRED');return}
     if((adminAssets.has(pathname)||pathname.startsWith('/api/admin/')) && !session.admin) {denied(request,response,'ADMIN_REQUIRED');return}
     if((pathname==='/studio'||pathname==='/app.js'||pathname==='/api/snapshot') && !session.entitlement.active) {denied(request,response,'SUBSCRIPTION_REQUIRED');return}
@@ -91,6 +94,8 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
       if(request.headers.origin!==origin || request.headers['x-eoduksini-request']!=='1') {send(response,403,failure('REQUEST_ORIGIN_REJECTED'));return}
     }
     if(pathname==='/api/logout' && request.method==='POST') {send(response,200,json({url:'/'}),undefined,false,{'Set-Cookie':auth.logout(request)});return}
+    if(pathname==='/api/organization' && ['GET','HEAD'].includes(request.method)) {send(response,200,json({schema_version:1,
+      organization:session.organization,organizations:session.organizations}),undefined,head);return}
     if(pathname==='/api/checkout' && request.method==='POST') {try{if(String(request.headers['content-type']??'').split(';')[0].trim().toLowerCase()!=='application/json')throw new Error('INVALID_CONTENT_TYPE');
       const payload=JSON.parse((await body(request,1024)).toString('utf8'));send(response,200,json({url:await billing.checkout(session,payload)}))}
       catch(error){const known={INVALID_PHONE:400,INVALID_PLAN:400,SUBSCRIPTION_ALREADY_ACTIVE:409},code=Object.hasOwn(known,error?.message)?error.message:'CHECKOUT_UNAVAILABLE';
@@ -100,12 +105,13 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
     if(pathname==='/api/admin/summary' && ['GET','HEAD'].includes(request.method)) {
       const users=store?.users?.()??[],active=users.filter(user=>['active','trialing'].includes(user.subscription_status)).length,
         admins=users.filter(user=>auth.isAdminId?.(user.github_id)).length;
-      send(response,200,json({schema_version:2,total_users:users.length,active_subscriptions:active,admin_accounts:admins,
+      send(response,200,json({schema_version:3,total_users:users.length,total_organizations:store?.organizations?.().length??0,
+        active_subscriptions:active,admin_accounts:admins,
         plan_counts:users.reduce((out,user)=>{if(['active','trialing'].includes(user.subscription_status)&&user.plan_id)out[user.plan_id]=(out[user.plan_id]??0)+1;return out},{}),
         subscription_counts:users.reduce((out,user)=>{const key=user.subscription_status??'none';out[key]=(out[key]??0)+1;return out},{})}),undefined,head);return;
     }
     if(pathname==='/api/admin/customers' && ['GET','HEAD'].includes(request.method)) {
-      try {send(response,200,json(customerPage(store?.users?.()??[],url,auth.isAdminId)),undefined,head)}
+      try {send(response,200,json(customerPage(store?.users?.()??[],url,auth.isAdminId,store?.organizationsForUser)),undefined,head)}
       catch {send(response,400,failure('INVALID_CUSTOMER_QUERY'),undefined,head)}return;
     }
     const value=protectedAssets.get(pathname)??adminAssets.get(pathname);

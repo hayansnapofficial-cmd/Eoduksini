@@ -43,16 +43,20 @@ test('Unconfigured snapshot has an explicit empty state',()=>{
 
 test('Studio server gates Studio by subscription and admin by role',async()=>{
   const expected=createStudioSnapshot(statusResult,economicsResult,0);
-  const subscriber={user:{github_id:'1',login:'member',avatar_url:null},entitlement:subscriptionEntitlement({status:'active',plan_id:'pro'}),admin:false};
+  const memberOrganization={organization_id:'org-1',name:'member Workspace',slug:'github-1',created_at:'2026-09-08T00:00:00.000Z',updated_at:'2026-09-08T00:00:00.000Z',role:'owner'};
+  const subscriber={user:{github_id:'1',login:'member',avatar_url:null},organization:memberOrganization,organizations:[memberOrganization],
+    entitlement:subscriptionEntitlement({status:'active',plan_id:'pro'}),admin:false};
   const coreSubscriber={...subscriber,entitlement:subscriptionEntitlement({status:'active',plan_id:'core'})};
   const inactive={...subscriber,entitlement:subscriptionEntitlement()};
   const administrator={...subscriber,user:{...subscriber.user,login:'owner'},entitlement:adminEntitlement(),admin:true};
   const auth={configured:true,session:request=>request.headers['x-test-role']==='admin'?administrator:
     request.headers['x-test-role']==='subscriber'?subscriber:request.headers['x-test-role']==='core'?coreSubscriber:
       request.headers['x-test-role']==='inactive'?inactive:null,begin:()=>'',complete:async()=>{},logout:()=>'',isAdminId:id=>id==='9'};
+  const organizationFor=id=>[{organization_id:`org-${id}`,name:`${id} Workspace`,slug:`github-${id}`,created_at:'2026-09-08T00:00:00.000Z',updated_at:'2026-09-08T00:00:00.000Z',role:'owner'}];
   const store={users:()=>[{github_id:'1',login:'member',avatar_url:null,billing_provider:'payapp',subscription_status:'active',plan_id:'pro',current_period_end:null,updated_at:'2026-09-08T01:00:00.000Z'},
     {github_id:'2',login:'waiting-user',avatar_url:null,billing_provider:null,subscription_status:null,plan_id:null,current_period_end:null,updated_at:'2026-09-08T00:00:00.000Z'},
-    {github_id:'9',login:'owner',avatar_url:null,billing_provider:null,subscription_status:null,plan_id:null,current_period_end:null,updated_at:'2026-09-08T02:00:00.000Z'}]};
+    {github_id:'9',login:'owner',avatar_url:null,billing_provider:null,subscription_status:null,plan_id:null,current_period_end:null,updated_at:'2026-09-08T02:00:00.000Z'}],
+    organizations:()=>['1','2','9'].map(id=>organizationFor(id)[0]),organizationsForUser:organizationFor};
   const server=createStudioServer({stateRoot:resolve('fixture-state'),snapshot:()=>expected,auth,store});
   await new Promise((accept,reject)=>server.listen(0,'127.0.0.1',accept).once('error',reject));
   const {port}=server.address(),url=`http://127.0.0.1:${port}`;
@@ -67,6 +71,8 @@ test('Studio server gates Studio by subscription and admin by role',async()=>{
     assert.deepEqual(proSnapshot.access,{plan_id:'pro',unlimited:false});assert.deepEqual(proSnapshot.capabilities,planFeatures('pro'));assert.deepEqual(proSnapshot.economics,expected.economics);
     const coreSnapshot=await fetch(url+'/api/snapshot',{headers:{'X-Test-Role':'core'}}).then(value=>value.json());assert.equal(coreSnapshot.economics,null);
     assert.equal(coreSnapshot.totals.observed_input_tokens,null);assert.deepEqual(coreSnapshot.attempts[0].metering,{execution_duration_ms:1000});
+    const organization=await fetch(url+'/api/organization',{headers:{'X-Test-Role':'subscriber'}}).then(value=>value.json());
+    assert.equal(organization.organization.organization_id,'org-1');assert.equal(organization.organizations.length,1);
     assert.equal((await fetch(url+'/admin',{headers:{'X-Test-Role':'subscriber'},redirect:'manual'})).status,303);
     assert.equal((await fetch(url+'/api/admin/summary',{headers:{'X-Test-Role':'admin'}})).status,200);
     assert.equal((await fetch(url+'/api/admin/customers')).status,401);
@@ -74,7 +80,7 @@ test('Studio server gates Studio by subscription and admin by role',async()=>{
     const customers=await fetch(url+'/api/admin/customers?q=waiting&status=none&limit=25&offset=0',{headers:{'X-Test-Role':'admin'}});
     assert.equal(customers.status,200);const customerPage=await customers.json();assert.equal(customerPage.total,1);
     assert.deepEqual(customerPage.customers[0],{github_id:'2',login:'waiting-user',avatar_url:null,billing_provider:null,role:'customer',
-      subscription:subscriptionEntitlement(),updated_at:'2026-09-08T00:00:00.000Z'});
+      subscription:subscriptionEntitlement(),organizations:[{organization_id:'org-2',name:'2 Workspace',role:'owner'}],updated_at:'2026-09-08T00:00:00.000Z'});
     const adminCustomer=await fetch(url+'/api/admin/customers?q=owner',{headers:{'X-Test-Role':'admin'}}).then(value=>value.json());
     assert.equal(adminCustomer.customers[0].role,'admin');assert.equal(adminCustomer.customers[0].subscription.unlimited,true);
     assert.equal(JSON.stringify(customerPage).includes('billing_subscription_id'),false);
@@ -99,6 +105,7 @@ test('Access store persists identity and applies webhook events idempotently',as
   const parent=mkdtempSync(join(tmpdir(),'eoduksini-access-parent-')),root=join(parent,'access');
   try {const store=createAccessStore(root);await store.upsertIdentity({github_id:'42',login:'operator',avatar_url:null});
     assert.equal(store.entitlement('42').active,false);
+    assert.equal(store.organizationsForUser('42').length,1);assert.equal(store.organizationsForUser('42')[0].role,'owner');
     assert.deepEqual(await store.applySubscription({event_id:'evt_1',provider:'payapp',github_id:'42',customer_id:'merchant',subscription_id:'sub_1',
       status:'active',current_period_end:123,plan_id:'core'}),{changed:true});
     assert.deepEqual(await store.applySubscription({event_id:'evt_1',provider:'payapp',github_id:'42',customer_id:'merchant',subscription_id:'sub_1',
@@ -113,7 +120,8 @@ test('Access store migrates legacy Stripe-shaped records to provider-neutral bil
     stripe_subscription_id:null,subscription_status:null,current_period_end:null,updated_at:'2026-09-08T00:00:00.000Z'}},processed_webhook_ids:[]};
   writeFileSync(join(root,'access.json'),JSON.stringify(legacy));
   try {const store=createAccessStore(root),user=store.user('42');assert.equal(user.billing_provider,null);
-    assert.equal(user.billing_subscription_id,null);assert.equal(user.plan_id,null);assert.equal(JSON.parse(readFileSync(join(root,'access.json'),'utf8')).schema_version,3);
+    assert.equal(user.billing_subscription_id,null);assert.equal(user.plan_id,null);assert.equal(store.organizationsForUser('42')[0].organization_id,'org-42');
+    assert.equal(JSON.parse(readFileSync(join(root,'access.json'),'utf8')).schema_version,4);
   } finally {rmSync(parent,{recursive:true,force:true})}
 });
 
@@ -124,7 +132,8 @@ test('Access store migrates active v2 subscriptions and pending requests to Core
     updated_at:'2026-09-08T00:00:00.000Z'}},processed_webhook_ids:[],billing_requests:{request:{request_id:'request',github_id:'42',
     provider:'payapp',expected_price:42000,subscription_id:'91',status:'active',created_at:'2026-09-08T00:00:00.000Z',
     updated_at:'2026-09-08T00:00:00.000Z'}}};writeFileSync(join(root,'access.json'),JSON.stringify(v2));
-  try {const store=createAccessStore(root);assert.equal(store.entitlement('42').plan_id,'core');assert.equal(store.billingRequest('request').plan_id,'core')}
+  try {const store=createAccessStore(root);assert.equal(store.entitlement('42').plan_id,'core');assert.equal(store.billingRequest('request').plan_id,'core');
+    assert.equal(store.organizationsForUser('42')[0].role,'owner')}
   finally {rmSync(parent,{recursive:true,force:true})}
 });
 
@@ -139,7 +148,7 @@ test('GitHub callback creates an opaque server session and never exposes the pro
     const completed=await auth.complete({code:'temporary-code',state:stateValue});assert.doesNotMatch(completed.cookie,/provider-secret/);
     const request={headers:{cookie:completed.cookie.split(';')[0]}},session=auth.session(request);
     assert.equal(session.user.login,'operator');assert.equal(session.admin,true);assert.equal(session.entitlement.active,true);
-    assert.equal(session.entitlement.plan_id,'admin');assert.equal(session.entitlement.unlimited,true);
+    assert.equal(session.entitlement.plan_id,'admin');assert.equal(session.entitlement.unlimited,true);assert.equal(session.organization.role,'owner');
   } finally {rmSync(parent,{recursive:true,force:true})}
 });
 
