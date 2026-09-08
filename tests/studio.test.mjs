@@ -121,7 +121,8 @@ test('Access store migrates legacy Stripe-shaped records to provider-neutral bil
   writeFileSync(join(root,'access.json'),JSON.stringify(legacy));
   try {const store=createAccessStore(root),user=store.user('42');assert.equal(user.billing_provider,null);
     assert.equal(user.billing_subscription_id,null);assert.equal(user.plan_id,null);assert.equal(store.organizationsForUser('42')[0].organization_id,'org-42');
-    assert.equal(JSON.parse(readFileSync(join(root,'access.json'),'utf8')).schema_version,4);
+    const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,5);
+    assert.deepEqual(migrated.provider_connections,{});assert.deepEqual(migrated.models,{});
   } finally {rmSync(parent,{recursive:true,force:true})}
 });
 
@@ -135,6 +136,57 @@ test('Access store migrates active v2 subscriptions and pending requests to Core
   try {const store=createAccessStore(root);assert.equal(store.entitlement('42').plan_id,'core');assert.equal(store.billingRequest('request').plan_id,'core');
     assert.equal(store.organizationsForUser('42')[0].role,'owner')}
   finally {rmSync(parent,{recursive:true,force:true})}
+});
+
+test('Access store upgrades the live v4 shape without changing organization records',()=>{
+  const parent=mkdtempSync(join(tmpdir(),'eoduksini-access-v4-')),root=join(parent,'access');mkdirSync(root);
+  const v4={schema_version:4,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{}};
+  writeFileSync(join(root,'access.json'),JSON.stringify(v4));
+  try {createAccessStore(root);const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,5);
+    assert.deepEqual(migrated.provider_connections,{});assert.deepEqual(migrated.models,{})}
+  finally {rmSync(parent,{recursive:true,force:true})}
+});
+
+test('Provider and model registry is tenant scoped, idempotent, and stores no credentials',async()=>{
+  const parent=mkdtempSync(join(tmpdir(),'eoduksini-registry-')),store=createAccessStore(join(parent,'access'));
+  try {await store.upsertIdentity({github_id:'42',login:'owner',avatar_url:null});await store.upsertIdentity({github_id:'43',login:'member',avatar_url:null});
+    const first=await store.createProviderConnection({organization_id:'org-42',provider_id:'openai',display_name:'Engineering OpenAI'});
+    assert.equal(first.changed,true);assert.equal(first.connection.status,'pending_agent');assert.equal(first.connection.secret_location,'customer_agent');
+    const repeated=await store.createProviderConnection({organization_id:'org-42',provider_id:'openai',display_name:'Engineering OpenAI'});
+    assert.equal(repeated.changed,false);assert.equal(repeated.connection.connection_id,first.connection.connection_id);
+    const model=await store.createModel({organization_id:'org-42',connection_id:first.connection.connection_id,provider_model_id:'customer-model-1',
+      display_name:'Planning model',role_capabilities:['head','planner']});assert.equal(model.changed,true);
+    assert.equal(store.providerConnections('org-42').length,1);assert.equal(store.providerConnections('org-43').length,0);
+    assert.equal(store.models('org-42').length,1);assert.equal(store.models('org-43').length,0);
+    await assert.rejects(()=>store.createModel({organization_id:'org-43',connection_id:first.connection.connection_id,provider_model_id:'cross-tenant',
+      display_name:'Cross tenant',role_capabilities:['general']}),/INVALID_MODEL/);
+    const serialized=readFileSync(join(parent,'access','access.json'),'utf8');assert.equal(serialized.includes('api_key'),false);
+  } finally {rmSync(parent,{recursive:true,force:true})}
+});
+
+test('Registry API derives organization from the session and restricts writes to organization admins',async()=>{
+  const parent=mkdtempSync(join(tmpdir(),'eoduksini-registry-api-')),store=createAccessStore(join(parent,'access'));
+  await store.upsertIdentity({github_id:'42',login:'owner',avatar_url:null});await store.upsertIdentity({github_id:'43',login:'member',avatar_url:null});
+  const organization=(id,role)=>({...store.organizationsForUser(id)[0],role});
+  const entitlement=subscriptionEntitlement({status:'active',plan_id:'pro'}),auth={configured:true,begin:()=>'',complete:async()=>{},logout:()=>'',isAdminId:()=>false,
+    session:request=>request.headers['x-test-role']==='owner'?{user:{github_id:'42',login:'owner',avatar_url:null},organization:organization('42','owner'),organizations:[organization('42','owner')],entitlement,admin:false}:
+      request.headers['x-test-role']==='member'?{user:{github_id:'43',login:'member',avatar_url:null},organization:organization('43','member'),organizations:[organization('43','member')],entitlement,admin:false}:null};
+  const server=createStudioServer({auth,store});await new Promise((accept,reject)=>server.listen(0,'127.0.0.1',accept).once('error',reject));
+  const url=`http://127.0.0.1:${server.address().port}`,headers={'X-Test-Role':'owner',Origin:'http://127.0.0.1:4317','X-Eoduksini-Request':'1','Content-Type':'application/json'};
+  try {const catalog=await fetch(url+'/api/provider-catalog').then(value=>value.json());assert.equal(catalog.providers.some(value=>value.id==='openai'),true);
+    const createdResponse=await fetch(url+'/api/organization/providers',{method:'POST',headers,body:JSON.stringify({provider_id:'openai',display_name:'Primary'})});
+    assert.equal(createdResponse.status,200);const created=await createdResponse.json();assert.equal(created.connection.organization_id,'org-42');
+    const injected=await fetch(url+'/api/organization/providers',{method:'POST',headers,body:JSON.stringify({organization_id:'org-43',provider_id:'openai',display_name:'Injected'})});
+    assert.equal(injected.status,400);
+    const secret=await fetch(url+'/api/organization/providers',{method:'POST',headers,body:JSON.stringify({provider_id:'openai',display_name:'Secret',api_key:'never-store'})});
+    assert.equal(secret.status,400);assert.equal(readFileSync(join(parent,'access','access.json'),'utf8').includes('never-store'),false);
+    const memberWrite=await fetch(url+'/api/organization/providers',{method:'POST',headers:{...headers,'X-Test-Role':'member'},body:JSON.stringify({provider_id:'deepseek',display_name:'Denied'})});
+    assert.equal(memberWrite.status,403);assert.equal((await memberWrite.json()).code,'ORGANIZATION_ADMIN_REQUIRED');
+    const memberList=await fetch(url+'/api/organization/providers',{headers:{'X-Test-Role':'member'}}).then(value=>value.json());assert.deepEqual(memberList.connections,[]);
+    const modelResponse=await fetch(url+'/api/organization/models',{method:'POST',headers,body:JSON.stringify({connection_id:created.connection.connection_id,
+      provider_model_id:'customer-model-1',display_name:'Head',role_capabilities:['head']})});assert.equal(modelResponse.status,200);
+    assert.equal((await fetch(url+'/api/organization/models',{headers:{'X-Test-Role':'owner'}}).then(value=>value.json())).models.length,1);
+  } finally {await new Promise(resolveClose=>server.close(resolveClose));rmSync(parent,{recursive:true,force:true})}
 });
 
 test('GitHub callback creates an opaque server session and never exposes the provider token',async()=>{

@@ -17,6 +17,7 @@ function planCard(plan){const card=document.createElement('article'),top=documen
   button.textContent='이 플랜 선택';button.addEventListener('click',()=>selectPlan(plan.id));card.append(name,top,billing,featureList(plan.features),button);return card}
 function showEntitlement(session){const entitlement=session.subscription,active=entitlement.active;$('plan-status').textContent=entitlement.status.toUpperCase();
   $('plan-status').classList.toggle('active',active);$('studio').classList.toggle('hidden',!active);$('subscribe').classList.toggle('hidden',active);
+  $('settings-link').classList.toggle('hidden',!active);
   $('phone-field').classList.toggle('hidden',active);$('plan-picker').classList.toggle('hidden',active);
   if(session.admin){$('plan-title').textContent='관리자 무제한';$('plan-detail').replaceChildren(featureList(features.admin));return}
   $('plan-title').textContent=active?`${entitlement.plan_name} 구독 활성`:'Studio 구독 필요';

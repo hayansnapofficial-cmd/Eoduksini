@@ -2,13 +2,18 @@ import { mkdirSync, lstatSync, readFileSync, renameSync, writeFileSync } from 'n
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isPaidPlan, subscriptionEntitlement } from './plans.mjs';
+import { isProviderId } from './provider-catalog.mjs';
 
 const SUBSCRIPTION=new Set(['active','trialing','past_due','canceled','unpaid','incomplete','incomplete_expired','paused']);
 const PROVIDERS=new Set(['payapp','stripe']);
-const empty=()=>({schema_version:4,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{}});
+const empty=()=>({schema_version:5,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{},provider_connections:{},models:{}});
 const validId=value=>typeof value==='string'&&/^[1-9][0-9]{0,31}$/.test(value);
 const validOrganizationId=value=>typeof value==='string'&&/^org-[1-9][0-9]{0,31}$/.test(value);
+const uuid='[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const validConnectionId=value=>typeof value==='string'&&new RegExp(`^pc-${uuid}$`).test(value);
+const validModelId=value=>typeof value==='string'&&new RegExp(`^model-${uuid}$`).test(value);
 const safeText=(value,max=256)=>typeof value==='string'&&value.length>0&&value.length<=max&&value.isWellFormed();
+const safeModelReference=value=>safeText(value,256)&&!/[\u0000-\u001f\u007f]/.test(value)&&value.trim()===value;
 const nullableText=(value,max=256)=>value===null||safeText(value,max);
 const check=(condition,reason)=>{if(!condition)throw new Error(reason)};
 
@@ -28,16 +33,19 @@ function migrate(data) {
       organizations[organization_id]={organization_id,name:`${user.login} Workspace`,slug:`github-${user.github_id}`,created_at:now,updated_at:now};
       memberships[`${organization_id}:${user.github_id}`]={organization_id,github_id:user.github_id,role:'owner',created_at:now}}
     data={...data,schema_version:4,organizations,memberships}}
+  if(data?.schema_version===4)data={...data,schema_version:5,provider_connections:{},models:{}};
   return data;
 }
 
 function validate(input) {
   const data=migrate(input);
-  check(data&&Object.keys(data).length===6&&data.schema_version===4&&data.users&&typeof data.users==='object'&&!Array.isArray(data.users)&&
+  check(data&&Object.keys(data).length===8&&data.schema_version===5&&data.users&&typeof data.users==='object'&&!Array.isArray(data.users)&&
     Object.keys(data.users).length<=10_000&&data.billing_requests&&typeof data.billing_requests==='object'&&!Array.isArray(data.billing_requests)&&
     Object.keys(data.billing_requests).length<=10_000&&data.organizations&&typeof data.organizations==='object'&&!Array.isArray(data.organizations)&&
     Object.keys(data.organizations).length<=10_000&&data.memberships&&typeof data.memberships==='object'&&!Array.isArray(data.memberships)&&
-    Object.keys(data.memberships).length<=50_000,'INVALID_ACCESS_STORE');
+    Object.keys(data.memberships).length<=50_000&&data.provider_connections&&typeof data.provider_connections==='object'&&!Array.isArray(data.provider_connections)&&
+    Object.keys(data.provider_connections).length<=50_000&&data.models&&typeof data.models==='object'&&!Array.isArray(data.models)&&
+    Object.keys(data.models).length<=100_000,'INVALID_ACCESS_STORE');
   check(Array.isArray(data.processed_webhook_ids)&&data.processed_webhook_ids.length<=1000&&
     data.processed_webhook_ids.every(id=>safeText(id,256))&&new Set(data.processed_webhook_ids).size===data.processed_webhook_ids.length,
     'INVALID_ACCESS_STORE');
@@ -59,6 +67,17 @@ function validate(input) {
     id===`${membership.organization_id}:${membership.github_id}`&&validOrganizationId(membership.organization_id)&&validId(membership.github_id)&&
     data.organizations[membership.organization_id]&&data.users[membership.github_id]&&['owner','admin','member'].includes(membership.role)&&
     safeText(membership.created_at,32),'INVALID_ACCESS_STORE');
+  for(const [id,connection] of Object.entries(data.provider_connections))check(connection&&Object.keys(connection).length===9&&
+    id===connection.connection_id&&validConnectionId(id)&&validOrganizationId(connection.organization_id)&&data.organizations[connection.organization_id]&&
+    isProviderId(connection.provider_id)&&safeText(connection.display_name,128)&&connection.secret_location==='customer_agent'&&
+    ['pending_agent','ready','disabled'].includes(connection.status)&&nullableText(connection.agent_id,128)&&
+    safeText(connection.created_at,32)&&safeText(connection.updated_at,32),'INVALID_ACCESS_STORE');
+  for(const [id,model] of Object.entries(data.models)){const connection=data.provider_connections[model?.connection_id];check(model&&Object.keys(model).length===9&&
+    id===model.model_id&&validModelId(id)&&validOrganizationId(model.organization_id)&&data.organizations[model.organization_id]&&
+    connection?.organization_id===model.organization_id&&safeModelReference(model.provider_model_id)&&safeText(model.display_name,128)&&
+    Array.isArray(model.role_capabilities)&&model.role_capabilities.length<=8&&new Set(model.role_capabilities).size===model.role_capabilities.length&&
+    model.role_capabilities.every(value=>['head','planner','coder','reviewer','validator','general'].includes(value))&&
+    ['active','disabled'].includes(model.status)&&safeText(model.created_at,32)&&safeText(model.updated_at,32),'INVALID_ACCESS_STORE')}
   return structuredClone(data);
 }
 
@@ -73,14 +92,36 @@ export function createAccessStore(root) {
   const raw=()=>{check(lstatSync(file).size<=8*1024*1024,'ACCESS_STORE_TOO_LARGE');return JSON.parse(readFileSync(file,'utf8'))};
   const save=data=>{data=validate(data);const temporary=join(root,`.access-${randomUUID()}.tmp`);
     writeFileSync(temporary,JSON.stringify(data,null,2)+'\n',{encoding:'utf8',mode:0o600,flag:'wx'});renameSync(temporary,file)};
-  if(raw().schema_version!==4)save(migrate(raw()));
+  if(raw().schema_version!==5)save(migrate(raw()));
   const load=()=>validate(raw());let queue=Promise.resolve();
   const update=operation=>{const result=queue.then(()=>{const data=load(),value=operation(data);save(data);return value});queue=result.catch(()=>{});return result};
   return {
-    user:id=>load().users[String(id)]??null,users:()=>Object.values(load().users).map(structuredClone),
-    organizations:()=>Object.values(load().organizations).map(structuredClone),
+    user:id=>load().users[String(id)]??null,users:()=>Object.values(load().users).map(value=>structuredClone(value)),
+    organizations:()=>Object.values(load().organizations).map(value=>structuredClone(value)),
     organizationsForUser(id){const data=load(),githubId=String(id);return Object.values(data.memberships).filter(value=>value.github_id===githubId)
       .map(value=>({...structuredClone(data.organizations[value.organization_id]),role:value.role})).sort((left,right)=>left.organization_id.localeCompare(right.organization_id))},
+    providerConnections(organizationId){const data=load();check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
+      return Object.values(data.provider_connections).filter(value=>value.organization_id===organizationId).map(value=>structuredClone(value))
+        .sort((left,right)=>left.created_at.localeCompare(right.created_at)||left.connection_id.localeCompare(right.connection_id))},
+    models(organizationId){const data=load();check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
+      return Object.values(data.models).filter(value=>value.organization_id===organizationId).map(value=>structuredClone(value))
+        .sort((left,right)=>left.created_at.localeCompare(right.created_at)||left.model_id.localeCompare(right.model_id))},
+    createProviderConnection({organization_id,provider_id,display_name}){return update(data=>{check(validOrganizationId(organization_id)&&
+      data.organizations[organization_id]&&isProviderId(provider_id)&&safeText(display_name,128)&&display_name.trim()===display_name,'INVALID_PROVIDER_CONNECTION');
+      const existing=Object.values(data.provider_connections).find(value=>value.organization_id===organization_id&&value.provider_id===provider_id&&
+        value.display_name.toLocaleLowerCase('en-US')===display_name.toLocaleLowerCase('en-US'));
+      if(existing)return {changed:false,connection:structuredClone(existing)};const now=new Date().toISOString(),connection_id=`pc-${randomUUID()}`;
+      data.provider_connections[connection_id]={connection_id,organization_id,provider_id,display_name,secret_location:'customer_agent',
+        status:'pending_agent',agent_id:null,created_at:now,updated_at:now};return {changed:true,connection:structuredClone(data.provider_connections[connection_id])}})},
+    createModel({organization_id,connection_id,provider_model_id,display_name,role_capabilities}){return update(data=>{const connection=data.provider_connections[connection_id];
+      check(validOrganizationId(organization_id)&&connection?.organization_id===organization_id&&safeModelReference(provider_model_id)&&
+        safeText(display_name,128)&&display_name.trim()===display_name&&Array.isArray(role_capabilities)&&role_capabilities.length>0&&role_capabilities.length<=8&&
+        new Set(role_capabilities).size===role_capabilities.length&&role_capabilities.every(value=>['head','planner','coder','reviewer','validator','general'].includes(value)),
+      'INVALID_MODEL');const existing=Object.values(data.models).find(value=>value.organization_id===organization_id&&value.connection_id===connection_id&&
+        value.provider_model_id===provider_model_id);if(existing){check(existing.display_name===display_name&&
+          JSON.stringify(existing.role_capabilities)===JSON.stringify(role_capabilities),'MODEL_ALREADY_EXISTS');return {changed:false,model:structuredClone(existing)}}
+      const now=new Date().toISOString(),model_id=`model-${randomUUID()}`;data.models[model_id]={model_id,organization_id,connection_id,provider_model_id,
+        display_name,role_capabilities,status:'active',created_at:now,updated_at:now};return {changed:true,model:structuredClone(data.models[model_id])}})},
     billingRequest:id=>load().billing_requests[String(id)]??null,
     upsertIdentity(identity){return update(data=>{const id=String(identity.github_id),prior=data.users[id];check(validId(id)&&safeText(identity.login,128),'INVALID_GITHUB_IDENTITY');
       data.users[id]={github_id:id,login:identity.login,avatar_url:identity.avatar_url??null,billing_provider:prior?.billing_provider??null,
