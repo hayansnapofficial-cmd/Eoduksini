@@ -32,6 +32,8 @@ test('tenant task routes separate create, approval, claim and ordered Agent evid
     const createdResponse=await post('/api/organization/tasks',payload);assert.equal(createdResponse.status,201);const created=await createdResponse.json();
     assert.equal(created.task.organization_id,organization.organization_id);assert.equal(created.task.status,'AWAITING_APPROVAL');
     assert.equal(JSON.stringify(created).includes('credential'),false);
+    const memberApproval=await post('/api/organization/tasks/CUSTOMER-TASK-1/approve',{expected_task_digest:created.task.task_digest,
+      approval_id:'DENIED-APPROVAL',ttl_ms:60_000,idempotency_key:'denied-approve'},{'X-Test-Role':'member'});assert.equal(memberApproval.status,403);
     const approvedResponse=await post('/api/organization/tasks/CUSTOMER-TASK-1/approve',{expected_task_digest:created.task.task_digest,
       approval_id:'APPROVAL-1',ttl_ms:60_000,idempotency_key:'approve-1'});assert.equal(approvedResponse.status,200);
     const approved=await approvedResponse.json();assert.equal(approved.task.status,'QUEUED');assert.equal(approved.approval.consumed_at,null);

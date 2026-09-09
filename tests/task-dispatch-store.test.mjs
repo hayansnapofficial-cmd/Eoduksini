@@ -73,6 +73,9 @@ test('only the assigned head node consumes approval and creates one attempt',asy
     await assert.rejects(value.store.claimDispatch({node_id:otherNode,idempotency_key:'claim-wrong',now:now+2000}),/NO_ELIGIBLE_DISPATCH/);
     const claim=await value.store.claimDispatch({node_id:headNode,idempotency_key:'claim-head',now:now+2000});
     assert.equal(claim.envelope.role,'head');assert.equal(claim.attempt.event_sequence,0);assert.equal(claim.attempt.lease_expires_at,now+122_000);
+    assert.equal(claim.envelope.task_digest.length,64);assert.equal(claim.envelope.role_graph_digest.length,64);
+    assert.equal(claim.envelope.assignment_digest,value.assignment.decision_digest);assert.equal(claim.envelope.profile_revision,value.profile.revision);
+    assert.equal(claim.envelope.dispatch_epoch,value.store.dispatchEpoch(value.organization_id));
     assert.match(claim.activation_receipt,/^[0-9a-f]{64}$/);assert.deepEqual(await value.store.claimDispatch({node_id:headNode,
       idempotency_key:'claim-head',now:now+5000}),claim);
     await assert.rejects(value.store.claimDispatch({node_id:headNode,idempotency_key:'claim-again',now:now+5000}),/NO_ELIGIBLE_DISPATCH/)
@@ -81,6 +84,11 @@ test('only the assigned head node consumes approval and creates one attempt',asy
 test('success opens exactly the next assigned role with predecessor digests',async()=>{
   const value=await fixture();try{await approved(value);const headNode=value.assignment.head_assignment.node_id,
     claim=await value.store.claimDispatch({node_id:headNode,idempotency_key:'claim-head',now:now+2000});
+    const wrongNode=value.nodes.find(node=>node.node_id!==headNode).node_id,event={dispatch_id:claim.envelope.dispatch_id,
+      attempt_id:claim.attempt.attempt_id,observed_started_at:new Date(now+2500).toISOString(),idempotency_key:'invalid-start',now:now+3000};
+    await assert.rejects(value.store.startDispatch({...event,node_id:wrongNode,expected_epoch:1,event_sequence:1}),/DISPATCH_EVENT_NOT_FOUND/);
+    await assert.rejects(value.store.startDispatch({...event,node_id:headNode,expected_epoch:2,event_sequence:1}),/DISPATCH_EPOCH_CHANGED/);
+    await assert.rejects(value.store.startDispatch({...event,node_id:headNode,expected_epoch:1,event_sequence:2}),/DISPATCH_EVENT_SEQUENCE_MISMATCH/);
     await value.store.startDispatch({node_id:headNode,dispatch_id:claim.envelope.dispatch_id,attempt_id:claim.attempt.attempt_id,
       expected_epoch:1,event_sequence:1,observed_started_at:new Date(now+2500).toISOString(),idempotency_key:'start-head',now:now+3000});
     await value.store.finishDispatch({node_id:headNode,dispatch_id:claim.envelope.dispatch_id,attempt_id:claim.attempt.attempt_id,
@@ -89,7 +97,8 @@ test('success opens exactly the next assigned role with predecessor digests',asy
     const plannerNode=value.assignment.assignments.planner.node_id,next=await value.store.claimDispatch({node_id:plannerNode,
       idempotency_key:'claim-planner',now:now+5000});
     assert.equal(next.envelope.role,'planner');assert.equal(next.envelope.predecessor_result_digest,H1);
-    assert.equal(next.envelope.predecessor_evidence_digest,H2)
+    assert.equal(next.envelope.predecessor_evidence_digest,H2);const [task]=await value.store.dispatchTasks(value.organization_id,now+5000);
+    assert.equal(task.dispatches.filter(item=>['CLAIMED','QUEUED','RUNNING'].includes(item.status)).length,1)
   }finally{clean(value)}});
 
 test('expired claimed work fences the organization and never opens a successor',async()=>{
