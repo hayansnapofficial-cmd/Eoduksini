@@ -1,4 +1,4 @@
-const $=id=>document.getElementById(id),roles=['head','planner','coder','reviewer','validator','general'],assignmentRoles=['planner','coder','reviewer','validator'];let connections=[],models=[],nodes=[],writable=false,currentProfile=null;
+const $=id=>document.getElementById(id),roles=['head','planner','coder','reviewer','validator','general'],assignmentRoles=['planner','coder','reviewer','validator'];let connections=[],models=[],nodes=[],tasks=[],writable=false,currentProfile=null;
 const post=async(path,payload)=>{const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Eoduksini-Request':'1'},body:JSON.stringify(payload)}),value=await response.json();
   if(!response.ok)throw new Error(value.code);return value};
 const empty=text=>{const node=document.createElement('p');node.className='registry-empty';node.textContent=text;return node};
@@ -23,7 +23,8 @@ function renderProfile(profile){currentProfile=profile;const heads=models.filter
   $('profile-mode').value=profile?.mode??'automatic';for(const role of assignmentRoles){const modelSelect=$(`assignment-model-${role}`),assignment=profile?.assignments?.[role]??null;
     modelSelect.replaceChildren();addOption(modelSelect,'','자동/미지정');for(const model of models.filter(value=>value.status==='active'&&(value.role_capabilities.includes(role)||value.role_capabilities.includes('general'))))
       addOption(modelSelect,model.model_id,model.display_name);if(assignment)modelSelect.value=assignment.model_id;fillNodeOptions(role,assignment?.node_id)}
-  $('profile-revision').textContent=profile?`R${profile.revision}`:'NEW';$('assignment-form').querySelector('button').disabled=!writable||!profile;toggleProfileMode()}
+  $('profile-revision').textContent=profile?`R${profile.revision}`:'NEW';$('assignment-form').querySelector('button').disabled=!writable||!profile;
+  const dispatchButton=$('dispatch-form')?.querySelector('button');if(dispatchButton)dispatchButton.disabled=!writable||!profile;toggleProfileMode()}
 const named=(collection,id)=>collection.find(value=>value.model_id===id||value.node_id===id)?.display_name??id;
 const reasonLabel={ROLE_CAPABILITY_EXACT:'역할 일치',GENERAL_CAPABILITY_FALLBACK:'범용 역할',NODE_ONLINE:'노드 온라인',ADAPTER_AVAILABLE:'Adapter 확인'};
 function assignmentRow(role,value){const row=document.createElement('article'),title=document.createElement('strong'),model=document.createElement('span'),node=document.createElement('span'),source=document.createElement('small');
@@ -34,6 +35,27 @@ function renderAssignment(value){const status=$('assignment-status');status.text
   const rows=[assignmentRow('head',value.head_assignment),...Object.entries(value.assignments).map(([role,item])=>assignmentRow(role,item))];$('assignment-results').replaceChildren(...rows);
   const issues=value.issues.map(item=>`${item.role}: ${item.code}`),limitLabel={COST_POLICY_NOT_CONFIGURED:'비용 최적화 정책 없음',PRIVACY_POLICY_NOT_CONFIGURED:'개인정보 정책 없음'},limits=value.optimization_limits.map(item=>`제한: ${limitLabel[item]??item}`);
   $('assignment-limits').textContent=[...issues,...limits,'권한: 실행·쓰기·승인·Git 게시·배포 모두 FALSE'].join(' · ');$('assignment-result').classList.remove('hidden')}
+const shortDigest=value=>value?`${value.slice(0,10)}…${value.slice(-8)}`:'대기 중';
+const statusLabel={AWAITING_APPROVAL:'승인 대기',WAITING_APPROVAL:'승인 대기',QUEUED:'전달 대기',WAITING_DEPENDENCY:'선행 역할 대기',CLAIMED:'Agent 수신',RUNNING:'진행 중',SUCCEEDED:'완료',FAILED:'실패',BLOCKED:'차단',RECOVERY_REQUIRED:'복구 검토 필요'};
+const statusClass=value=>['SUCCEEDED'].includes(value)?'success':['FAILED','BLOCKED'].includes(value)?'failed':value==='RECOVERY_REQUIRED'?'recovery':['QUEUED','CLAIMED','RUNNING'].includes(value)?'active':'waiting';
+function dispatchRoleRow(item){const row=document.createElement('li'),index=document.createElement('span'),copy=document.createElement('div'),title=document.createElement('strong'),assignment=document.createElement('small'),state=document.createElement('span'),evidence=document.createElement('small');
+  row.className=`dispatch-role ${statusClass(item.status)}`;index.className='dispatch-index';index.textContent=String(item.index+1).padStart(2,'0');title.textContent=item.role.toUpperCase();
+  assignment.textContent=`모델 ${named(models,item.model_id)} · 노드 ${named(nodes,item.node_id)}`;state.className='dispatch-state';state.textContent=statusLabel[item.status]??item.status;
+  evidence.className='dispatch-evidence';evidence.textContent=item.predecessor_dispatch_id?`선행 결과 ${shortDigest(item.predecessor_result_digest)} · 증거 ${shortDigest(item.predecessor_evidence_digest)}`:'시작 역할 · 작업 승인에 결속';
+  if(item.recovery_reason)evidence.textContent=`${evidence.textContent} · ${item.recovery_reason}`;copy.append(title,assignment,evidence);row.append(index,copy,state);return row}
+function dispatchCard(task){const article=document.createElement('article'),header=document.createElement('header'),copy=document.createElement('div'),eyebrow=document.createElement('p'),title=document.createElement('h3'),state=document.createElement('span'),objective=document.createElement('p'),facts=document.createElement('dl'),timeline=document.createElement('ol'),footer=document.createElement('footer');
+  article.className=`dispatch-card ${statusClass(task.status)}`;eyebrow.className='eyebrow';eyebrow.textContent=`EPOCH ${task.dispatch_epoch} · PROFILE R${task.profile_revision}`;title.textContent=task.task_id;state.className='dispatch-status';state.textContent=statusLabel[task.status]??task.status;
+  copy.append(eyebrow,title);header.append(copy,state);objective.className='dispatch-objective';objective.textContent=task.objective;
+  for(const [label,value] of [['Task digest',shortDigest(task.task_digest)],['Graph digest',shortDigest(task.role_graph_digest)],['승인 소비',task.approval_consumed?'소비됨':'소비되지 않음']]){const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=value;facts.append(dt,dd)}
+  timeline.className='dispatch-timeline';timeline.setAttribute('aria-label',`${task.task_id} 역할 진행 순서`);timeline.replaceChildren(...task.dispatches.map(dispatchRoleRow));
+  if(task.status==='AWAITING_APPROVAL'&&writable){const button=document.createElement('button');button.className='approval-action';button.type='button';button.textContent='이 작업 승인';button.addEventListener('click',()=>approveTask(task,button));footer.append(button)}
+  if(task.status==='RECOVERY_REQUIRED'){const warning=document.createElement('p');warning.className='recovery-copy';warning.textContent='자동 재시도는 차단됐습니다. epoch와 실행 증거를 검토한 뒤 별도 복구 절차를 진행하세요.';footer.append(warning)}
+  article.append(header,objective,facts,timeline);if(footer.childNodes.length)article.append(footer);return article}
+function renderTasks(){const ordered=[...tasks].sort((a,b)=>b.created_at.localeCompare(a.created_at));$('dispatch-count').textContent=String(ordered.length);$('dispatch-tasks').replaceChildren(...(ordered.length?ordered.map(dispatchCard):[empty('아직 생성한 전달 작업이 없습니다.')]))}
+async function reloadTasks(){const data=await fetch('/api/organization/tasks').then(value=>value.json());if(data.code)throw new Error(data.code);tasks=data.tasks??[];renderTasks()}
+async function approveTask(task,button){button.disabled=true;$('dispatch-message').textContent='승인 결속을 확인하는 중입니다.';try{await post(`/api/organization/tasks/${encodeURIComponent(task.task_id)}/approve`,{expected_task_digest:task.task_digest,
+    approval_id:`approval-${crypto.randomUUID()}`,ttl_ms:3_600_000,idempotency_key:`approve-${crypto.randomUUID()}`});$('dispatch-message').textContent='승인했습니다. Head Agent가 가져갈 때 승인 권한이 한 번만 소비됩니다.';await reloadTasks()}
+  catch(error){button.disabled=false;$('dispatch-message').textContent=error.message==='TASK_DIGEST_MISMATCH'?'작업이 변경됐습니다. 목록을 새로 불러온 뒤 확인하세요.':'승인하지 못했습니다. Profile·epoch·작업 상태를 확인하세요.'}}
 function toggleProfileMode(){const automatic=$('profile-mode').value==='automatic';for(const role of assignmentRoles){$(`assignment-model-${role}`).disabled=!writable||automatic;
   $(`assignment-node-${role}`).disabled=!writable||automatic}$('head-model').disabled=!writable;$('profile-form').querySelector('button').disabled=!writable||models.length===0}
 async function loadProfile(){const data=await fetch('/api/organization/orchestration-profile').then(value=>value.json());renderProfile(data.profile)}
@@ -48,7 +70,7 @@ async function load(){try{const [session,catalogData]=await Promise.all([fetch('
   $('organization').textContent=`${session.organization.name} · ${session.organization.role.toUpperCase()}${writable?'':' · 읽기 전용'}`;
   const catalog=new Map(catalogData.providers.map(value=>[value.id,value.name]));for(const value of catalogData.providers){const option=document.createElement('option');option.value=value.id;option.textContent=`${value.name} · ${value.placement}`;$('provider').append(option)}
   if(!writable)for(const form of document.querySelectorAll('form'))for(const control of form.elements)control.disabled=true;
-  await Promise.all([reload(catalog),reloadNodes()]);await loadProfile();$('provider-form').addEventListener('submit',async event=>{event.preventDefault();try{await post('/api/organization/providers',{provider_id:$('provider').value,display_name:$('connection-name').value.trim()});
+  await Promise.all([reload(catalog),reloadNodes()]);await loadProfile();await reloadTasks();$('provider-form').addEventListener('submit',async event=>{event.preventDefault();try{await post('/api/organization/providers',{provider_id:$('provider').value,display_name:$('connection-name').value.trim()});
     $('connection-name').value='';$('provider-message').textContent='등록했습니다. Agent가 자격증명을 확인할 때까지 대기 상태입니다.';await reload(catalog)}catch(error){$('provider-message').textContent=error.message==='ORGANIZATION_ADMIN_REQUIRED'?'조직 관리자 권한이 필요합니다.':'공급자 정보를 등록하지 못했습니다.'}});
   $('model-form').addEventListener('submit',async event=>{event.preventDefault();const selected=[...document.querySelectorAll('input[name=role]:checked')].map(value=>value.value);if(selected.length===0){$('model-message').textContent='역할을 하나 이상 선택하세요.';return}
     try{await post('/api/organization/models',{connection_id:$('model-connection').value,provider_model_id:$('provider-model-id').value.trim(),display_name:$('model-name').value.trim(),role_capabilities:selected});
@@ -66,7 +88,13 @@ async function load(){try{const [session,catalogData]=await Promise.all([fetch('
       task_id:$('assignment-task-id').value.trim(),expected_profile_revision:currentProfile.revision,roles:selected});renderAssignment(value);
       $('assignment-message').textContent=value.status==='READY'?'배정 조건을 통과했습니다. 이 결과는 아직 실행 승인이 아닙니다.':'차단 사유를 해결한 뒤 다시 평가하세요.'}
     catch(error){$('assignment-result').classList.add('hidden');$('assignment-status').textContent='FAILED';$('assignment-status').className='review';
-      $('assignment-message').textContent=error.message==='ORCHESTRATION_PROFILE_CHANGED'?'Profile이 변경됐습니다. 새로고침 후 다시 평가하세요.':'배정 조건과 Task ID를 확인해 주세요.'}});setInterval(()=>reloadNodes().catch(()=>{}),30_000)
+      $('assignment-message').textContent=error.message==='ORCHESTRATION_PROFILE_CHANGED'?'Profile이 변경됐습니다. 새로고침 후 다시 평가하세요.':'배정 조건과 Task ID를 확인해 주세요.'}});
+  $('dispatch-form').addEventListener('submit',async event=>{event.preventDefault();const selected=[...document.querySelectorAll('input[name=dispatch-role]:checked')].map(value=>value.value);
+    if(selected.length===0){$('dispatch-message').textContent='순차 역할을 하나 이상 선택하세요.';return}if(!currentProfile){$('dispatch-message').textContent='먼저 Orchestration Profile을 저장하세요.';return}
+    const button=event.submitter;button.disabled=true;$('dispatch-message').textContent='현재 Profile과 노드 상태를 다시 검사하는 중입니다.';try{const value=await post('/api/organization/tasks',{task_id:$('dispatch-task-id').value.trim(),objective:$('dispatch-objective').value.trim(),
+      profile_revision:currentProfile.revision,roles:selected,idempotency_key:`create-${crypto.randomUUID()}`});$('dispatch-message').textContent=`${value.task.task_id}을 생성했습니다. 내용을 확인한 뒤 별도로 승인하세요.`;
+      $('dispatch-task-id').value='';$('dispatch-objective').value='';await reloadTasks()}catch(error){$('dispatch-message').textContent=error.message==='ORCHESTRATION_PROFILE_CHANGED'?'Profile이 변경됐습니다. 새로고침 후 다시 시도하세요.':'작업을 만들지 못했습니다. 역할 배정과 온라인 노드를 확인하세요.'}
+    finally{button.disabled=!writable||!currentProfile}});$('dispatch-form').querySelector('button').disabled=!writable||!currentProfile;setInterval(()=>{reloadNodes().catch(()=>{});reloadTasks().catch(()=>{})},30_000)
 }catch{$('provider-message').textContent='Registry를 불러오지 못했습니다.'}}
 for(const role of roles){const label=document.createElement('label'),input=document.createElement('input'),text=document.createElement('span');input.type='checkbox';input.name='role';input.value=role;if(role==='general')input.checked=true;text.textContent=role;label.append(input,text);$('roles').append(label)}
 for(const role of assignmentRoles){const row=document.createElement('div'),title=document.createElement('strong'),modelLabel=document.createElement('label'),modelSelect=document.createElement('select'),nodeLabel=document.createElement('label'),nodeSelect=document.createElement('select');
