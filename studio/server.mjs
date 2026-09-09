@@ -38,6 +38,7 @@ const jsonBody=async(request,limit=4096)=>{if(String(request.headers['content-ty
   throw new Error('INVALID_CONTENT_TYPE');return JSON.parse((await body(request,limit)).toString('utf8'))};
 const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
 const bearer=request=>{const value=String(request.headers.authorization??'');return value.startsWith('Bearer ')?value.slice(7):null};
+const segment=value=>{try{const decoded=decodeURIComponent(value);if(decoded.includes('/')||decoded.includes('\\'))throw new Error();return decoded}catch{throw new Error('INVALID_PATH_SEGMENT')}};
 const publicNode=(node,now=Date.now())=>({...node,connectivity:node.status==='revoked'?'revoked':node.last_seen_at&&
   now-Date.parse(node.last_seen_at)<=90_000?'online':'offline'});
 const denied=(request,response,code)=>request.url.startsWith('/api/')?send(response,code==='ADMIN_REQUIRED'?403:401,failure(code)):
@@ -104,11 +105,28 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
       send(response,200,json({schema_version:1,node:publicNode(node)}))}
       catch(error){const unavailable=error?.message==='AGENT_SERVICE_UNAVAILABLE',unauthorized=error?.message==='INVALID_AGENT_CREDENTIAL';
         send(response,unavailable?503:unauthorized?401:400,failure(unavailable?'AGENT_SERVICE_UNAVAILABLE':unauthorized?'INVALID_AGENT_CREDENTIAL':'INVALID_NODE_CAPABILITIES'))}return}
+    if(pathname==='/api/agent/tasks/claim' && request.method==='POST') {try{if(!store)throw new Error('AGENT_SERVICE_UNAVAILABLE');const payload=await jsonBody(request,1024);
+      if(!exact(payload,['idempotency_key']))throw new Error('INVALID_DISPATCH_CLAIM');const node=store.authenticateNode(bearer(request));
+      send(response,200,json(await store.claimDispatch({node_id:node.node_id,...payload})))}
+      catch(error){const code=error?.message??'INVALID_DISPATCH_CLAIM',unavailable=code==='AGENT_SERVICE_UNAVAILABLE',unauthorized=code==='INVALID_AGENT_CREDENTIAL',
+        conflict=['NO_ELIGIBLE_DISPATCH','DISPATCH_EPOCH_CHANGED','ORCHESTRATION_PROFILE_CHANGED','IDEMPOTENCY_CONFLICT'].includes(code);
+        send(response,unavailable?503:unauthorized?401:conflict?409:400,failure(unavailable?'AGENT_SERVICE_UNAVAILABLE':unauthorized?'INVALID_AGENT_CREDENTIAL':code))}return}
+    const agentDispatch=pathname.match(/^\/api\/agent\/dispatches\/([^/]+)\/(started|progress|finished)$/);
+    if(agentDispatch && request.method==='POST') {try{if(!store)throw new Error('AGENT_SERVICE_UNAVAILABLE');const action=agentDispatch[2],payload=await jsonBody(request,4096),
+      keys={started:['attempt_id','expected_epoch','event_sequence','observed_started_at','idempotency_key'],progress:['attempt_id','expected_epoch','event_sequence','observed_at','idempotency_key'],
+        finished:['attempt_id','expected_epoch','event_sequence','status','result_digest','evidence_digest','observed_finished_at','idempotency_key']}[action];
+      if(!exact(payload,keys))throw new Error('INVALID_DISPATCH_EVENT');const node=store.authenticateNode(bearer(request)),input={node_id:node.node_id,
+        dispatch_id:segment(agentDispatch[1]),...payload},method={started:'startDispatch',progress:'progressDispatch',finished:'finishDispatch'}[action];
+      send(response,200,json(await store[method](input)))}catch(error){const code=error?.message??'INVALID_DISPATCH_EVENT',unavailable=code==='AGENT_SERVICE_UNAVAILABLE',
+        unauthorized=code==='INVALID_AGENT_CREDENTIAL',conflict=['DISPATCH_EPOCH_CHANGED','DISPATCH_EVENT_NOT_FOUND','DISPATCH_EVENT_SEQUENCE_MISMATCH',
+          'DISPATCH_LEASE_EXPIRED','DISPATCH_EVENT_ORDER','IDEMPOTENCY_CONFLICT'].includes(code);
+        send(response,unavailable?503:unauthorized?401:conflict?409:400,failure(unavailable?'AGENT_SERVICE_UNAVAILABLE':unauthorized?'INVALID_AGENT_CREDENTIAL':code))}return}
     if(publicAssets.has(pathname) && ['GET','HEAD'].includes(request.method)) {const value=publicAssets.get(pathname);send(response,200,value.body,value.type,head);return}
     const needsSession=protectedAssets.has(pathname)||adminAssets.has(pathname)||
       ['/api/snapshot','/api/organization','/api/checkout','/api/logout','/api/admin/summary','/api/admin/customers'].includes(pathname);
     const organizationApi=['/api/organization/providers','/api/organization/models','/api/organization/nodes','/api/organization/node-enrollments',
-      '/api/organization/orchestration-profile','/api/organization/orchestration-assignment'].includes(pathname);
+      '/api/organization/orchestration-profile','/api/organization/orchestration-assignment','/api/organization/tasks'].includes(pathname)||
+      /^\/api\/organization\/tasks\/[^/]+\/approve$/.test(pathname);
     if((needsSession||organizationApi) && !session) {denied(request,response,'LOGIN_REQUIRED');return}
     if((adminAssets.has(pathname)||pathname.startsWith('/api/admin/')) && !session.admin) {denied(request,response,'ADMIN_REQUIRED');return}
     if((pathname==='/studio'||pathname==='/app.js'||pathname==='/settings'||pathname==='/settings.js'||pathname==='/settings.css'||pathname==='/api/snapshot'||organizationApi) && !session.entitlement.active) {denied(request,response,'SUBSCRIPTION_REQUIRED');return}
@@ -141,6 +159,26 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
       catch(error){const known=['INVALID_ORCHESTRATION_ASSIGNMENT','ORCHESTRATION_PROFILE_REQUIRED','ORCHESTRATION_PROFILE_CHANGED','INVALID_CONTENT_TYPE','BODY_TOO_LARGE'],
           code=known.includes(error?.message)?error.message:'INVALID_ORCHESTRATION_ASSIGNMENT';
         send(response,code==='ORCHESTRATION_PROFILE_CHANGED'?409:400,failure(code))}return}
+    if(pathname==='/api/organization/tasks' && ['GET','HEAD'].includes(request.method)) {try{send(response,200,json({schema_version:1,
+      tasks:await store.dispatchTasks(session.organization.organization_id)}),undefined,head)}catch{send(response,503,failure('DISPATCH_STORE_UNAVAILABLE'),undefined,head)}return}
+    if(pathname==='/api/organization/tasks' && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){
+      send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}try{const payload=await jsonBody(request,16*1024);
+        if(!exact(payload,['task_id','objective','profile_revision','roles','idempotency_key']))throw new Error('INVALID_DISPATCH_TASK');
+        const organization_id=session.organization.organization_id,assignment=resolveOrchestrationAssignment({organization_id,task_id:payload.task_id,
+          expected_profile_revision:payload.profile_revision,roles:payload.roles,profile:store.orchestrationProfile(organization_id),
+          connections:store.providerConnections(organization_id),models:store.models(organization_id),nodes:store.nodes(organization_id)});
+        send(response,201,json({schema_version:1,...await store.createDispatchTask({...payload,organization_id,assignment,created_by:session.user.github_id})}))}
+      catch(error){const code=error?.message??'INVALID_DISPATCH_TASK',conflict=['ORCHESTRATION_PROFILE_CHANGED','ASSIGNMENT_NOT_READY','IDEMPOTENCY_CONFLICT',
+        'DISPATCH_TASK_ALREADY_EXISTS'].includes(code);send(response,conflict?409:400,failure(code))}return}
+    const approvalRoute=pathname.match(/^\/api\/organization\/tasks\/([^/]+)\/approve$/);
+    if(approvalRoute && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}
+      try{const payload=await jsonBody(request,4096);if(!exact(payload,['expected_task_digest','approval_id','ttl_ms','idempotency_key']))
+          throw new Error('INVALID_DISPATCH_APPROVAL');const organization_id=session.organization.organization_id;
+        send(response,200,json({schema_version:1,...await store.approveDispatchTask({...payload,organization_id,task_id:segment(approvalRoute[1]),
+          approved_by:session.user.github_id})}))}
+      catch(error){const code=error?.message??'INVALID_DISPATCH_APPROVAL',notFound=code==='DISPATCH_TASK_NOT_FOUND',conflict=['TASK_DIGEST_MISMATCH',
+        'DISPATCH_TASK_NOT_APPROVABLE','ORCHESTRATION_PROFILE_CHANGED','DISPATCH_EPOCH_CHANGED','DISPATCH_APPROVAL_ALREADY_EXISTS','IDEMPOTENCY_CONFLICT'].includes(code);
+        send(response,notFound?404:conflict?409:400,failure(code))}return}
     if(pathname==='/api/organization/node-enrollments' && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){
       send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}try{const payload=await jsonBody(request,1024);
         if(!exact(payload,['display_name']))throw new Error('INVALID_NODE_ENROLLMENT');send(response,200,json({schema_version:1,

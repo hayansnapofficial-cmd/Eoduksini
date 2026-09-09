@@ -210,8 +210,9 @@ export function createAccessStore(root) {
   const load=()=>validate(raw());let queue=Promise.resolve();
   const update=operation=>{const result=queue.then(()=>{const data=load(),value=operation(data);save(data);return value});queue=result.catch(()=>{});return result};
   const roleEvent=(kind,input)=>update(data=>{const {node_id,dispatch_id,attempt_id,expected_epoch,event_sequence,idempotency_key,now}=input,
-    node=data.nodes[node_id];check(node&&safeKey(idempotency_key)&&safeKey(dispatch_id)&&validAttemptId(attempt_id)&&Number.isSafeInteger(expected_epoch)&&
-      Number.isSafeInteger(event_sequence)&&Number.isSafeInteger(now)&&now>=0,'INVALID_DISPATCH_EVENT');
+    node=data.nodes[node_id];check(node,'INVALID_DISPATCH_NODE');check(safeKey(idempotency_key),'INVALID_DISPATCH_IDEMPOTENCY_KEY');
+    check(safeKey(dispatch_id),'INVALID_DISPATCH_ID');check(validAttemptId(attempt_id),'INVALID_DISPATCH_ATTEMPT');
+    check(Number.isSafeInteger(expected_epoch)&&Number.isSafeInteger(event_sequence)&&Number.isSafeInteger(now)&&now>=0,'INVALID_DISPATCH_EVENT');
     reconcileData(data,node.organization_id,now);check(data.dispatch_epochs[node.organization_id]===expected_epoch,'DISPATCH_EPOCH_CHANGED');
     const request=Object.fromEntries(Object.entries(input).filter(([key])=>key!=='now')),request_digest=canonicalDigest(request),scope=`${node_id}:${kind}`,
       id=idempotencyId(scope,idempotency_key),prior=data.dispatch_idempotency[id];
@@ -247,6 +248,10 @@ export function createAccessStore(root) {
     nodes(organizationId){const data=load();check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
       return Object.values(data.nodes).filter(value=>value.organization_id===organizationId).map(({credential_hash:_,...value})=>structuredClone(value))
         .sort((left,right)=>left.created_at.localeCompare(right.created_at)||left.node_id.localeCompare(right.node_id))},
+    authenticateNode(credential){const data=load();check(safeText(credential,64)&&credential.startsWith('agt_'),'INVALID_AGENT_CREDENTIAL');
+      const hashed=createHash('sha256').update(credential).digest('hex'),node=Object.values(data.nodes).find(value=>{const left=Buffer.from(value.credential_hash,'hex'),
+        right=Buffer.from(hashed,'hex');return left.length===right.length&&timingSafeEqual(left,right)});check(node&&node.status==='active','INVALID_AGENT_CREDENTIAL');
+      const {credential_hash:_,...publicValue}=node;return structuredClone(publicValue)},
     orchestrationProfile(organizationId){const data=load();check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
       return data.orchestration_profiles[organizationId]?structuredClone(data.orchestration_profiles[organizationId]):null},
     dispatchEpoch(organizationId){const data=load();check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
@@ -295,9 +300,9 @@ export function createAccessStore(root) {
       data.dispatch_attempts[attempt_id]=attempt;item.attempt_id=attempt_id;item.status='CLAIMED';task.updated_at=timestamp;
       const response={envelope:publicEnvelope(task,item),attempt:structuredClone(attempt),activation_receipt:approval.activation_receipt};
       data.dispatch_idempotency[id]={scope,key:idempotency_key,request_digest,response:structuredClone(response)};return response})},
-    startDispatch(input){return roleEvent('started',input)},
-    progressDispatch(input){return roleEvent('progress',input)},
-    finishDispatch(input){return roleEvent('finished',input)},
+    startDispatch(input){return roleEvent('started',{...input,now:input.now??Date.now()})},
+    progressDispatch(input){return roleEvent('progress',{...input,now:input.now??Date.now()})},
+    finishDispatch(input){return roleEvent('finished',{...input,now:input.now??Date.now()})},
     reconcileDispatches({organization_id,now=Date.now()}){return update(data=>{check(validOrganizationId(organization_id)&&data.organizations[organization_id],
       'UNKNOWN_ORGANIZATION');reconcileData(data,organization_id,now);return {organization_id,dispatch_epoch:data.dispatch_epochs[organization_id]}})},
     saveOrchestrationProfile({organization_id,mode,head_model_id,assignments}){return update(data=>{check(validOrganizationId(organization_id)&&
