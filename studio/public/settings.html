@@ -37,4 +37,14 @@
     <div id="assignment-result" class="assignment-result hidden"><div class="assignment-summary"><strong id="assignment-summary-title"></strong><code id="assignment-digest"></code></div>
       <div id="assignment-results" class="assignment-results"></div><div id="assignment-limits" class="assignment-limits"></div></div>
   </section>
+  <section class="registry-panel dispatch-panel"><div class="panel-title"><div><p class="eyebrow">STEP 06</p><h2>Tenant Task Dispatch</h2></div><span id="dispatch-count">0</span></div>
+    <div class="dispatch-boundary"><strong>작업 생성과 승인은 분리됩니다.</strong><p>이 단계는 작업 전달 기록이며 모델·명령을 실행하지 않습니다.</p></div>
+    <form id="dispatch-form"><div class="dispatch-inputs"><label>Task ID<input id="dispatch-task-id" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}" placeholder="예: CUSTOMER-TASK-002"></label>
+      <fieldset><legend>순차 역할</legend><div class="role-grid dispatch-role-grid"><label><input type="checkbox" name="dispatch-role" value="planner" checked><span>planner</span></label><label><input type="checkbox" name="dispatch-role" value="coder" checked><span>coder</span></label><label><input type="checkbox" name="dispatch-role" value="reviewer" checked><span>reviewer</span></label><label><input type="checkbox" name="dispatch-role" value="validator" checked><span>validator</span></label></div></fieldset></div>
+      <label>작업 목적<textarea id="dispatch-objective" required maxlength="2000" rows="4" placeholder="Agent에 전달할 경계가 분명한 작업 목적을 입력하세요."></textarea></label>
+      <p class="profile-help">현재 Profile을 서버에서 다시 평가해 Head부터 선택한 역할까지 순서대로 고정합니다. 생성만으로는 Agent가 작업을 가져갈 수 없습니다.</p>
+      <button class="primary-action" type="submit" disabled>작업 생성</button></form>
+    <p id="dispatch-message" class="form-message" role="status" aria-live="polite"></p>
+    <div id="dispatch-tasks" class="dispatch-tasks"></div>
+  </section>
 </main><script type="module" src="/settings.js"></script></body></html>
