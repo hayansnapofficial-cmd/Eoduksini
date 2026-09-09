@@ -48,4 +48,10 @@ Authenticated heartbeat reports contain bounded platform, architecture, logical 
 
 Each organization may persist one revisioned profile with a Head AI and either `automatic` or `manual` role assignment mode. Automatic mode deliberately stores no preselected role assignments. Manual mode may bind planner, coder, reviewer, and validator roles to an eligible organization model and an active organization node whose reported adapters include that model's provider type.
 
-The server validates every referenced model, node, role capability, provider adapter, and organization boundary. A profile is routing configuration only: it cannot authorize model calls, task execution, writes, approvals, locks, merges, or promotion. Automatic recommendation generation and task-time enforcement remain the next integration step.
+The server validates every referenced model, node, role capability, provider adapter, and organization boundary. A profile is routing configuration only: it cannot authorize model calls, task execution, writes, approvals, locks, merges, or promotion.
+
+## Role assignment check slice
+
+An organization owner or administrator may evaluate a bounded Task ID and requested role set against one exact orchestration-profile revision. The server derives the organization from the authenticated session, rechecks active models, provider adapters, active nodes, and a heartbeat no older than 90 seconds, then returns a deterministic decision digest. Automatic mode prefers exact role capability and current node capacity; manual mode fails closed when a fixed assignment is missing or unavailable. Reviewer and validator assignments must use both a different model and a different node from the coder assignment.
+
+The response records missing assignments, independence failures, and the current absence of cost and privacy optimization policy explicitly. It always declares model execution, remote execution, repository writes, approval, Git publication, and deployment authority as false. The result is not persisted as a task or dispatch authorization. Tenant-scoped task storage, consumption of the exact decision digest, dispatch evidence, and recovery remain delivery step 6.

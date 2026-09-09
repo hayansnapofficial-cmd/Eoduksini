@@ -28,4 +28,13 @@
       <p class="profile-help">자동 배정은 실행 시점의 가용성과 정책을 사용합니다. 직접 배정은 역할 모델과 실행 노드를 고정합니다.</p><button class="primary-action" type="submit">Profile 저장</button></form>
     <p id="profile-message" class="form-message" role="status"></p>
   </section>
+  <section class="registry-panel assignment-panel"><div class="panel-title"><div><p class="eyebrow">STEP 05</p><h2>Role Assignment Check</h2></div><span id="assignment-status">NOT RUN</span></div>
+    <form id="assignment-form"><div class="assignment-inputs"><label>Task ID<input id="assignment-task-id" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}" placeholder="예: CUSTOMER-TASK-001"></label>
+      <fieldset><legend>필요 역할</legend><div class="role-grid assignment-role-grid"><label><input type="checkbox" name="assignment-role" value="planner" checked><span>planner</span></label><label><input type="checkbox" name="assignment-role" value="coder" checked><span>coder</span></label><label><input type="checkbox" name="assignment-role" value="reviewer" checked><span>reviewer</span></label><label><input type="checkbox" name="assignment-role" value="validator" checked><span>validator</span></label></div></fieldset></div>
+      <p class="profile-help">현재 Profile revision과 90초 이내 heartbeat, 역할 capability, Provider Adapter를 다시 검사합니다. 결과 digest는 다음 Task Dispatch 단계가 소비할 수 있지만 그 자체로 실행 권한을 만들지는 않습니다.</p>
+      <button class="primary-action" type="submit" disabled>배정 평가</button></form>
+    <p id="assignment-message" class="form-message" role="status"></p>
+    <div id="assignment-result" class="assignment-result hidden"><div class="assignment-summary"><strong id="assignment-summary-title"></strong><code id="assignment-digest"></code></div>
+      <div id="assignment-results" class="assignment-results"></div><div id="assignment-limits" class="assignment-limits"></div></div>
+  </section>
 </main><script type="module" src="/settings.js"></script></body></html>
