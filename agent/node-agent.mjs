@@ -64,5 +64,5 @@ async function main(argv){const [command,...args]=argv;if(command==='enroll'&&ar
     console.log(JSON.stringify({status:'ENROLLED',node_id:node.node_id,display_name:node.display_name}));return}
   if(command==='heartbeat'&&args.length===1){const node=await heartbeat(args[0]);console.log(JSON.stringify({status:'HEARTBEAT_OK',node_id:node.node_id,last_seen_at:node.last_seen_at}));return}
   if(command==='claim'&&args.length===2){console.log(JSON.stringify(await claimDispatch(args[0],args[1])));return}
-  if(command==='run'&&args.length===1){await run(args[0]);return}fail('USAGE: enroll <origin> <absolute-state-root> | heartbeat <absolute-state-root> | run <absolute-state-root>')}
+  if(command==='run'&&args.length===1){await run(args[0]);return}fail('USAGE: enroll <origin> <absolute-state-root> | heartbeat <absolute-state-root> | claim <absolute-state-root> <idempotency-key> | run <absolute-state-root>')}
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))main(process.argv.slice(2)).catch(error=>{console.error(error.message);process.exitCode=1});
