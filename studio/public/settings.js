@@ -1,4 +1,4 @@
-const $=id=>document.getElementById(id),roles=['head','planner','coder','reviewer','validator','general'],assignmentRoles=['planner','coder','reviewer','validator'];let connections=[],models=[],nodes=[],writable=false;
+const $=id=>document.getElementById(id),roles=['head','planner','coder','reviewer','validator','general'],assignmentRoles=['planner','coder','reviewer','validator'];let connections=[],models=[],nodes=[],writable=false,currentProfile=null;
 const post=async(path,payload)=>{const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Eoduksini-Request':'1'},body:JSON.stringify(payload)}),value=await response.json();
   if(!response.ok)throw new Error(value.code);return value};
 const empty=text=>{const node=document.createElement('p');node.className='registry-empty';node.textContent=text;return node};
@@ -18,12 +18,22 @@ function compatibleNodes(modelId){const model=models.find(value=>value.model_id=
   return nodes.filter(value=>value.status==='active'&&value.adapters.includes(connection?.provider_id))}
 function fillNodeOptions(role,selected=null){const select=$(`assignment-node-${role}`),modelId=$(`assignment-model-${role}`).value;select.replaceChildren();addOption(select,'','노드 선택');
   for(const node of compatibleNodes(modelId))addOption(select,node.node_id,node.display_name);if(selected&&[...select.options].some(value=>value.value===selected))select.value=selected}
-function renderProfile(profile){const heads=models.filter(value=>value.status==='active'&&(value.role_capabilities.includes('head')||value.role_capabilities.includes('general'))),head=$('head-model');
+function renderProfile(profile){currentProfile=profile;const heads=models.filter(value=>value.status==='active'&&(value.role_capabilities.includes('head')||value.role_capabilities.includes('general'))),head=$('head-model');
   head.replaceChildren();addOption(head,'','Head AI 선택');for(const model of heads)addOption(head,model.model_id,model.display_name);if(profile?.head_model_id)head.value=profile.head_model_id;
   $('profile-mode').value=profile?.mode??'automatic';for(const role of assignmentRoles){const modelSelect=$(`assignment-model-${role}`),assignment=profile?.assignments?.[role]??null;
     modelSelect.replaceChildren();addOption(modelSelect,'','자동/미지정');for(const model of models.filter(value=>value.status==='active'&&(value.role_capabilities.includes(role)||value.role_capabilities.includes('general'))))
       addOption(modelSelect,model.model_id,model.display_name);if(assignment)modelSelect.value=assignment.model_id;fillNodeOptions(role,assignment?.node_id)}
-  $('profile-revision').textContent=profile?`R${profile.revision}`:'NEW';toggleProfileMode()}
+  $('profile-revision').textContent=profile?`R${profile.revision}`:'NEW';$('assignment-form').querySelector('button').disabled=!writable||!profile;toggleProfileMode()}
+const named=(collection,id)=>collection.find(value=>value.model_id===id||value.node_id===id)?.display_name??id;
+const reasonLabel={ROLE_CAPABILITY_EXACT:'역할 일치',GENERAL_CAPABILITY_FALLBACK:'범용 역할',NODE_ONLINE:'노드 온라인',ADAPTER_AVAILABLE:'Adapter 확인'};
+function assignmentRow(role,value){const row=document.createElement('article'),title=document.createElement('strong'),model=document.createElement('span'),node=document.createElement('span'),source=document.createElement('small');
+  title.textContent=role;model.textContent=value?named(models,value.model_id):'배정 없음';node.textContent=value?named(nodes,value.node_id):'수동 검토 필요';source.textContent=value?`${value.source==='automatic'?'자동':value.source==='manual'?'직접':'Head'} · ${value.reason_codes.map(code=>reasonLabel[code]??code).join(' · ')}`:'BLOCKED';
+  if(!value){model.className='unassigned';node.className='unassigned'}row.append(title,model,node,source);return row}
+function renderAssignment(value){const status=$('assignment-status');status.textContent=value.status==='READY'?'READY':'REVIEW';status.className=value.status==='READY'?'ready':'review';
+  $('assignment-summary-title').textContent=value.status==='READY'?'현재 조건에서 배정 가능':'실행 전 수동 검토 필요';$('assignment-digest').textContent=value.decision_digest;
+  const rows=[assignmentRow('head',value.head_assignment),...Object.entries(value.assignments).map(([role,item])=>assignmentRow(role,item))];$('assignment-results').replaceChildren(...rows);
+  const issues=value.issues.map(item=>`${item.role}: ${item.code}`),limitLabel={COST_POLICY_NOT_CONFIGURED:'비용 최적화 정책 없음',PRIVACY_POLICY_NOT_CONFIGURED:'개인정보 정책 없음'},limits=value.optimization_limits.map(item=>`제한: ${limitLabel[item]??item}`);
+  $('assignment-limits').textContent=[...issues,...limits,'권한: 실행·쓰기·승인·Git 게시·배포 모두 FALSE'].join(' · ');$('assignment-result').classList.remove('hidden')}
 function toggleProfileMode(){const automatic=$('profile-mode').value==='automatic';for(const role of assignmentRoles){$(`assignment-model-${role}`).disabled=!writable||automatic;
   $(`assignment-node-${role}`).disabled=!writable||automatic}$('head-model').disabled=!writable;$('profile-form').querySelector('button').disabled=!writable||models.length===0}
 async function loadProfile(){const data=await fetch('/api/organization/orchestration-profile').then(value=>value.json());renderProfile(data.profile)}
@@ -50,7 +60,13 @@ async function load(){try{const [session,catalogData]=await Promise.all([fetch('
     catch{$('node-message').textContent='복사할 수 없습니다. 토큰을 직접 선택해 주세요.'}});$('profile-mode').addEventListener('change',toggleProfileMode);
   $('profile-form').addEventListener('submit',async event=>{event.preventDefault();const mode=$('profile-mode').value,assignments={};for(const role of assignmentRoles){const model_id=$(`assignment-model-${role}`).value,node_id=$(`assignment-node-${role}`).value;
     assignments[role]=mode==='automatic'||(!model_id&&!node_id)?null:{model_id,node_id}}try{const value=await post('/api/organization/orchestration-profile',{mode,head_model_id:$('head-model').value,assignments});
-      renderProfile(value.profile);$('profile-message').textContent='Orchestration Profile을 저장했습니다.'}catch{$('profile-message').textContent='모델 역할과 노드 Adapter 조합을 확인해 주세요.'}});setInterval(()=>reloadNodes().catch(()=>{}),30_000)
+      renderProfile(value.profile);$('assignment-result').classList.add('hidden');$('assignment-status').textContent='NOT RUN';$('assignment-status').className='';$('profile-message').textContent='Orchestration Profile을 저장했습니다.'}catch{$('profile-message').textContent='모델 역할과 노드 Adapter 조합을 확인해 주세요.'}});
+  $('assignment-form').addEventListener('submit',async event=>{event.preventDefault();const selected=[...document.querySelectorAll('input[name=assignment-role]:checked')].map(value=>value.value);
+    if(selected.length===0){$('assignment-message').textContent='필요 역할을 하나 이상 선택하세요.';return}try{const value=await post('/api/organization/orchestration-assignment',{
+      task_id:$('assignment-task-id').value.trim(),expected_profile_revision:currentProfile.revision,roles:selected});renderAssignment(value);
+      $('assignment-message').textContent=value.status==='READY'?'배정 조건을 통과했습니다. 이 결과는 아직 실행 승인이 아닙니다.':'차단 사유를 해결한 뒤 다시 평가하세요.'}
+    catch(error){$('assignment-result').classList.add('hidden');$('assignment-status').textContent='FAILED';$('assignment-status').className='review';
+      $('assignment-message').textContent=error.message==='ORCHESTRATION_PROFILE_CHANGED'?'Profile이 변경됐습니다. 새로고침 후 다시 평가하세요.':'배정 조건과 Task ID를 확인해 주세요.'}});setInterval(()=>reloadNodes().catch(()=>{}),30_000)
 }catch{$('provider-message').textContent='Registry를 불러오지 못했습니다.'}}
 for(const role of roles){const label=document.createElement('label'),input=document.createElement('input'),text=document.createElement('span');input.type='checkbox';input.name='role';input.value=role;if(role==='general')input.checked=true;text.textContent=role;label.append(input,text);$('roles').append(label)}
 for(const role of assignmentRoles){const row=document.createElement('div'),title=document.createElement('strong'),modelLabel=document.createElement('label'),modelSelect=document.createElement('select'),nodeLabel=document.createElement('label'),nodeSelect=document.createElement('select');

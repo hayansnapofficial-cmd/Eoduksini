@@ -75,7 +75,7 @@ Windows PowerShell에서는 `$env:EODUKSINI_ENROLLMENT_TOKEN='발급받은값'`�
 - `/`: 공개
 - `/account`: 로그인 필요
 - `/studio`, `/api/snapshot`: 로그인과 활성 Core/Pro 구독 또는 관리자 권한 필요. 고급 계측·경제성 필드는 Pro와 관리자에게만 반환
-- `/settings`, `/api/organization/*`: 활성 구독 조직의 설정·조회. Provider·Model·등록 토큰 쓰기는 owner/admin만 허용
+- `/settings`, `/api/organization/*`: 활성 구독 조직의 설정·조회. Provider·Model·등록 토큰·Profile 저장과 revision 고정 역할 배정 평가는 owner/admin만 허용
 - `/api/agent/enroll`, `/api/agent/heartbeat`: 브라우저 세션 대신 일회성 등록 토큰 또는 Agent Bearer 자격증명 사용
 - `/admin`, `/api/admin/summary`: 로그인과 관리자 GitHub ID 필요
 - `/api/payapp/feedback`: 공개 HTTPS 서버 통보 전용, 폼 본문과 결제 계약 검증

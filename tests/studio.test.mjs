@@ -250,6 +250,16 @@ test('Registry API derives organization from the session and restricts writes to
     assert.equal(deniedProfile.status,403);const savedProfile=await fetch(url+'/api/organization/orchestration-profile',{method:'POST',headers,body:JSON.stringify(profilePayload)});
     assert.equal(savedProfile.status,200);const profile=await fetch(url+'/api/organization/orchestration-profile',{headers:{'X-Test-Role':'owner'}}).then(value=>value.json());
     assert.equal(profile.profile.mode,'automatic');assert.equal(profile.profile.organization_id,'org-42');
+    const assignmentPayload={task_id:'CUSTOMER-TASK-1',expected_profile_revision:profile.profile.revision,roles:['planner']};
+    const assignmentResponse=await fetch(url+'/api/organization/orchestration-assignment',{method:'POST',headers,body:JSON.stringify(assignmentPayload)});
+    assert.equal(assignmentResponse.status,200);const assignment=await assignmentResponse.json();assert.equal(assignment.organization_id,'org-42');
+    assert.equal(assignment.profile_revision,profile.profile.revision);assert.equal(assignment.authority.model_execution,false);
+    const staleAssignment=await fetch(url+'/api/organization/orchestration-assignment',{method:'POST',headers,
+      body:JSON.stringify({...assignmentPayload,expected_profile_revision:profile.profile.revision+1})});assert.equal(staleAssignment.status,409);
+    const injectedAssignment=await fetch(url+'/api/organization/orchestration-assignment',{method:'POST',headers,
+      body:JSON.stringify({...assignmentPayload,organization_id:'org-43'})});assert.equal(injectedAssignment.status,400);
+    const deniedAssignment=await fetch(url+'/api/organization/orchestration-assignment',{method:'POST',headers:{...headers,'X-Test-Role':'member'},
+      body:JSON.stringify(assignmentPayload)});assert.equal(deniedAssignment.status,403);
   } finally {await new Promise(resolveClose=>server.close(resolveClose));rmSync(parent,{recursive:true,force:true})}
 });
 

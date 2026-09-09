@@ -8,6 +8,7 @@ import { createAuth } from './auth.mjs';
 import { createBilling } from './billing.mjs';
 import { adminEntitlement, publicPlanCatalog, subscriptionEntitlement } from './plans.mjs';
 import { providerCatalog } from './provider-catalog.mjs';
+import { resolveOrchestrationAssignment } from './orchestration.mjs';
 
 const asset=(file,type='text/html; charset=utf-8')=>({body:readFileSync(new URL('./public/'+file,import.meta.url)),type});
 const publicAssets=new Map([['/',asset('home.html')],['/home.js',asset('home.js','text/javascript; charset=utf-8')],
@@ -107,7 +108,7 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
     const needsSession=protectedAssets.has(pathname)||adminAssets.has(pathname)||
       ['/api/snapshot','/api/organization','/api/checkout','/api/logout','/api/admin/summary','/api/admin/customers'].includes(pathname);
     const organizationApi=['/api/organization/providers','/api/organization/models','/api/organization/nodes','/api/organization/node-enrollments',
-      '/api/organization/orchestration-profile'].includes(pathname);
+      '/api/organization/orchestration-profile','/api/organization/orchestration-assignment'].includes(pathname);
     if((needsSession||organizationApi) && !session) {denied(request,response,'LOGIN_REQUIRED');return}
     if((adminAssets.has(pathname)||pathname.startsWith('/api/admin/')) && !session.admin) {denied(request,response,'ADMIN_REQUIRED');return}
     if((pathname==='/studio'||pathname==='/app.js'||pathname==='/settings'||pathname==='/settings.js'||pathname==='/settings.css'||pathname==='/api/snapshot'||organizationApi) && !session.entitlement.active) {denied(request,response,'SUBSCRIPTION_REQUIRED');return}
@@ -131,6 +132,15 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
           profile:await store.saveOrchestrationProfile({organization_id:session.organization.organization_id,...payload})}))}
       catch(error){const code=['INVALID_ORCHESTRATION_PROFILE','INVALID_CONTENT_TYPE','BODY_TOO_LARGE'].includes(error?.message)?error.message:'INVALID_ORCHESTRATION_PROFILE';
         send(response,400,failure(code))}return}
+    if(pathname==='/api/organization/orchestration-assignment' && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){
+      send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}try{const payload=await jsonBody(request,2048);
+        if(!exact(payload,['task_id','expected_profile_revision','roles']))throw new Error('INVALID_ORCHESTRATION_ASSIGNMENT');
+        const organization_id=session.organization.organization_id,decision=resolveOrchestrationAssignment({organization_id,...payload,
+          profile:store.orchestrationProfile(organization_id),connections:store.providerConnections(organization_id),models:store.models(organization_id),
+          nodes:store.nodes(organization_id)});send(response,200,json(decision))}
+      catch(error){const known=['INVALID_ORCHESTRATION_ASSIGNMENT','ORCHESTRATION_PROFILE_REQUIRED','ORCHESTRATION_PROFILE_CHANGED','INVALID_CONTENT_TYPE','BODY_TOO_LARGE'],
+          code=known.includes(error?.message)?error.message:'INVALID_ORCHESTRATION_ASSIGNMENT';
+        send(response,code==='ORCHESTRATION_PROFILE_CHANGED'?409:400,failure(code))}return}
     if(pathname==='/api/organization/node-enrollments' && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){
       send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}try{const payload=await jsonBody(request,1024);
         if(!exact(payload,['display_name']))throw new Error('INVALID_NODE_ENROLLMENT');send(response,200,json({schema_version:1,
