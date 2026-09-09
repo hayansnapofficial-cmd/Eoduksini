@@ -17,6 +17,7 @@ const validConnectionId=value=>typeof value==='string'&&new RegExp(`^pc-${uuid}$
 const validModelId=value=>typeof value==='string'&&new RegExp(`^model-${uuid}$`).test(value);
 const validEnrollmentId=value=>typeof value==='string'&&new RegExp(`^enrollment-${uuid}$`).test(value);
 const validNodeId=value=>typeof value==='string'&&new RegExp(`^node-${uuid}$`).test(value);
+const validAttemptId=value=>typeof value==='string'&&new RegExp(`^attempt-${uuid}$`).test(value);
 const validHash=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
 const safeText=(value,max=256)=>typeof value==='string'&&value.length>0&&value.length<=max&&value.isWellFormed();
 const safeModelReference=value=>safeText(value,256)&&!/[\u0000-\u001f\u007f]/.test(value)&&value.trim()===value;
@@ -27,6 +28,31 @@ const objectCollection=(value,max)=>value&&typeof value==='object'&&!Array.isArr
 const dispatchTaskKey=(organizationId,taskId)=>`${organizationId}:${taskId}`;
 const dispatchApprovalKey=(organizationId,approvalId)=>`${organizationId}:${approvalId}`;
 const idempotencyId=(scope,key)=>canonicalDigest({scope,key});
+const validTime=value=>safeText(value,32)&&Number.isFinite(Date.parse(value));
+const onlineAt=(node,now)=>node?.status==='active'&&validTime(node.last_seen_at)&&now>=Date.parse(node.last_seen_at)&&now-Date.parse(node.last_seen_at)<=90_000;
+const attemptsForTask=(data,task)=>Object.values(data.dispatch_attempts).filter(attempt=>attempt.organization_id===task.organization_id&&attempt.task_id===task.task_id);
+const approvalForTask=(data,task,{liveAt=null,consumed=null}={})=>Object.values(data.dispatch_approvals).filter(value=>value.organization_id===task.organization_id&&
+  value.task_id===task.task_id&&(consumed===null||(consumed?value.consumed_at!==null:value.consumed_at===null))&&(liveAt===null||value.expires_at>liveAt))
+  .sort((left,right)=>right.issued_at-left.issued_at)[0]??null;
+const publicEnvelope=(task,item)=>({schema_version:1,organization_id:task.organization_id,task_id:task.task_id,dispatch_id:item.dispatch_id,
+  role:item.role,objective:task.objective,model_id:item.model_id,node_id:item.node_id,provider_id:item.provider_id,task_digest:task.task_digest,
+  role_graph_digest:task.role_graph_digest,assignment_digest:task.assignment_digest,profile_revision:task.profile_revision,dispatch_epoch:task.dispatch_epoch,
+  predecessor_result_digest:item.predecessor_result_digest,predecessor_evidence_digest:item.predecessor_evidence_digest,authority:structuredClone(task.authority)});
+function reconcileData(data,organizationId,now) {
+  check(Number.isSafeInteger(now)&&now>=0,'INVALID_TIME');let fenced=false;
+  for(const task of Object.values(data.dispatch_tasks).filter(value=>value.organization_id===organizationId)) {
+    if(task.status==='QUEUED'&&task.dispatches[0].status==='QUEUED'&&!approvalForTask(data,task,{liveAt:now,consumed:false})){
+      task.status='AWAITING_APPROVAL';task.dispatches[0].status='WAITING_APPROVAL';task.updated_at=new Date(now).toISOString()}
+    if(task.status!=='ACTIVE')continue;
+    const active=attemptsForTask(data,task).find(value=>['CLAIMED','RUNNING'].includes(value.status));if(!active)continue;
+    const node=data.nodes[active.node_id],reason=active.lease_expires_at<=now?'LEASE_EXPIRED':!onlineAt(node,now)?'NODE_HEARTBEAT_LOST':null;
+    if(!reason)continue;active.status='RECOVERY_REQUIRED';active.recovery_reason=reason;active.updated_at=new Date(now).toISOString();
+    const dispatch=task.dispatches.find(value=>value.dispatch_id===active.dispatch_id);dispatch.status='RECOVERY_REQUIRED';dispatch.recovery_reason=reason;
+    for(const item of task.dispatches)if(item.status==='WAITING_DEPENDENCY')item.status='BLOCKED';task.status='RECOVERY_REQUIRED';task.updated_at=active.updated_at;fenced=true;
+  }
+  if(fenced)data.dispatch_epochs[organizationId]++;
+  return fenced;
+}
 const validateCapabilities=value=>check(value&&Object.keys(value).length===8&&safeText(value.agent_version,32)&&
   ['aix','darwin','freebsd','linux','openbsd','sunos','win32'].includes(value.os)&&safeText(value.arch,32)&&
   Number.isSafeInteger(value.cpu_logical)&&value.cpu_logical>=1&&value.cpu_logical<=4096&&Number.isSafeInteger(value.memory_bytes)&&
@@ -149,7 +175,19 @@ function validate(input) {
       approval.task_digest===task.task_digest&&approval.role_graph_digest===task.role_graph_digest&&approval.assignment_digest===task.assignment_digest&&
       approval.profile_revision===task.profile_revision&&approval.dispatch_epoch===task.dispatch_epoch&&validId(approval.approved_by)&&
       Number.isSafeInteger(approval.issued_at)&&Number.isSafeInteger(approval.expires_at)&&approval.expires_at>approval.issued_at&&
-      (approval.consumed_at===null||Number.isSafeInteger(approval.consumed_at))&&nullableText(approval.activation_receipt,64)&&validHash(approval.approval_digest),
+      (approval.consumed_at===null||Number.isSafeInteger(approval.consumed_at))&&(approval.activation_receipt===null||validHash(approval.activation_receipt))&&
+      ((approval.consumed_at===null)===(approval.activation_receipt===null))&&validHash(approval.approval_digest),
+    'INVALID_ACCESS_STORE')}
+  for(const [id,attempt] of Object.entries(data.dispatch_attempts)){const task=data.dispatch_tasks[dispatchTaskKey(attempt?.organization_id,attempt?.task_id)],
+    item=task?.dispatches.find(value=>value.dispatch_id===attempt?.dispatch_id),approval=data.dispatch_approvals[dispatchApprovalKey(attempt?.organization_id,attempt?.approval_id)];
+    check(attempt&&Object.keys(attempt).length===22&&id===attempt.attempt_id&&validAttemptId(id)&&task&&item&&item.role===attempt.role&&
+      item.node_id===attempt.node_id&&approval&&attempt.approval_digest===approval.approval_digest&&attempt.activation_receipt===approval.activation_receipt&&
+      attempt.dispatch_epoch===task.dispatch_epoch&&['CLAIMED','RUNNING','SUCCEEDED','FAILED','RECOVERY_REQUIRED'].includes(attempt.status)&&
+      Number.isSafeInteger(attempt.event_sequence)&&attempt.event_sequence>=0&&Number.isSafeInteger(attempt.lease_started_at)&&
+      Number.isSafeInteger(attempt.lease_expires_at)&&attempt.lease_expires_at>attempt.lease_started_at&&
+      (attempt.observed_started_at===null||validTime(attempt.observed_started_at))&&(attempt.observed_finished_at===null||validTime(attempt.observed_finished_at))&&
+      (attempt.result_digest===null||validHash(attempt.result_digest))&&(attempt.evidence_digest===null||validHash(attempt.evidence_digest))&&
+      nullableText(attempt.recovery_reason,256)&&validTime(attempt.created_at)&&validTime(attempt.updated_at)&&item.attempt_id===attempt.attempt_id,
     'INVALID_ACCESS_STORE')}
   for(const [id,entry] of Object.entries(data.dispatch_idempotency))check(validHash(id)&&entry&&Object.keys(entry).length===4&&safeText(entry.scope,160)&&
     safeKey(entry.key)&&validHash(entry.request_digest)&&entry.response&&typeof entry.response==='object'&&!Array.isArray(entry.response)&&
@@ -171,6 +209,30 @@ export function createAccessStore(root) {
   if(raw().schema_version!==8)save(migrate(raw()));
   const load=()=>validate(raw());let queue=Promise.resolve();
   const update=operation=>{const result=queue.then(()=>{const data=load(),value=operation(data);save(data);return value});queue=result.catch(()=>{});return result};
+  const roleEvent=(kind,input)=>update(data=>{const {node_id,dispatch_id,attempt_id,expected_epoch,event_sequence,idempotency_key,now}=input,
+    node=data.nodes[node_id];check(node&&safeKey(idempotency_key)&&safeKey(dispatch_id)&&validAttemptId(attempt_id)&&Number.isSafeInteger(expected_epoch)&&
+      Number.isSafeInteger(event_sequence)&&Number.isSafeInteger(now)&&now>=0,'INVALID_DISPATCH_EVENT');
+    reconcileData(data,node.organization_id,now);check(data.dispatch_epochs[node.organization_id]===expected_epoch,'DISPATCH_EPOCH_CHANGED');
+    const request=Object.fromEntries(Object.entries(input).filter(([key])=>key!=='now')),request_digest=canonicalDigest(request),scope=`${node_id}:${kind}`,
+      id=idempotencyId(scope,idempotency_key),prior=data.dispatch_idempotency[id];
+    if(prior){check(prior.scope===scope&&prior.key===idempotency_key&&prior.request_digest===request_digest,'IDEMPOTENCY_CONFLICT');return structuredClone(prior.response)}
+    const attempt=data.dispatch_attempts[attempt_id],task=attempt&&data.dispatch_tasks[dispatchTaskKey(attempt.organization_id,attempt.task_id)],
+      item=task?.dispatches.find(value=>value.dispatch_id===dispatch_id);check(attempt&&task&&item&&attempt.node_id===node_id&&attempt.dispatch_id===dispatch_id,
+      'DISPATCH_EVENT_NOT_FOUND');check(attempt.dispatch_epoch===expected_epoch&&task.dispatch_epoch===expected_epoch,'DISPATCH_EPOCH_CHANGED');
+    check(event_sequence===attempt.event_sequence+1,'DISPATCH_EVENT_SEQUENCE_MISMATCH');check(now<attempt.lease_expires_at,'DISPATCH_LEASE_EXPIRED');
+    const timestamp=new Date(now).toISOString();
+    if(kind==='started'){check(attempt.status==='CLAIMED'&&validTime(input.observed_started_at),'DISPATCH_EVENT_ORDER');attempt.status='RUNNING';
+      item.status='RUNNING';attempt.observed_started_at=input.observed_started_at;attempt.lease_expires_at=now+120_000}
+    else if(kind==='progress'){check(attempt.status==='RUNNING'&&validTime(input.observed_at),'DISPATCH_EVENT_ORDER');attempt.lease_expires_at=now+120_000}
+    else {check(kind==='finished'&&attempt.status==='RUNNING'&&['SUCCEEDED','FAILED'].includes(input.status)&&validHash(input.result_digest)&&
+      validHash(input.evidence_digest)&&validTime(input.observed_finished_at),'DISPATCH_EVENT_ORDER');attempt.status=input.status;item.status=input.status;
+      attempt.observed_finished_at=input.observed_finished_at;attempt.result_digest=input.result_digest;attempt.evidence_digest=input.evidence_digest;
+      if(input.status==='SUCCEEDED'){const next=task.dispatches[item.index+1];if(next){next.predecessor_result_digest=input.result_digest;
+          next.predecessor_evidence_digest=input.evidence_digest;next.status='QUEUED'}else task.status='SUCCEEDED'}
+      else {task.status='FAILED';for(const later of task.dispatches)if(later.status==='WAITING_DEPENDENCY')later.status='BLOCKED'}}
+    attempt.event_sequence=event_sequence;attempt.updated_at=timestamp;task.updated_at=timestamp;
+    const response={task:dispatchPublicTask(task,attemptsForTask(data,task)),attempt:structuredClone(attempt)};
+    data.dispatch_idempotency[id]={scope,key:idempotency_key,request_digest,response:structuredClone(response)};return response});
   return {
     user:id=>load().users[String(id)]??null,users:()=>Object.values(load().users).map(value=>structuredClone(value)),
     organizations:()=>Object.values(load().organizations).map(value=>structuredClone(value)),
@@ -189,10 +251,10 @@ export function createAccessStore(root) {
       return data.orchestration_profiles[organizationId]?structuredClone(data.orchestration_profiles[organizationId]):null},
     dispatchEpoch(organizationId){const data=load();check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
       return data.dispatch_epochs[organizationId]},
-    dispatchTasks(organizationId){const data=load();check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
-      return Object.values(data.dispatch_tasks).filter(task=>task.organization_id===organizationId).sort((left,right)=>left.created_at.localeCompare(right.created_at)||
-        left.task_id.localeCompare(right.task_id)).map(task=>dispatchPublicTask(task,Object.values(data.dispatch_attempts).filter(attempt=>attempt.task_id===task.task_id&&
-          attempt.organization_id===organizationId)))},
+    dispatchTasks(organizationId,now=Date.now()){return update(data=>{check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
+      reconcileData(data,organizationId,now);return Object.values(data.dispatch_tasks).filter(task=>task.organization_id===organizationId)
+        .sort((left,right)=>left.created_at.localeCompare(right.created_at)||left.task_id.localeCompare(right.task_id)).map(task=>{
+          const approval=approvalForTask(data,task);return {...dispatchPublicTask(task,attemptsForTask(data,task)),approval_consumed:Boolean(approval?.consumed_at)}})})},
     createDispatchTask({organization_id,task_id,objective,profile_revision,roles,assignment,created_by,idempotency_key,now=Date.now()}){return update(data=>{
       check(validOrganizationId(organization_id)&&data.organizations[organization_id]&&safeKey(idempotency_key),'INVALID_DISPATCH_TASK');
       const request_digest=canonicalDigest({organization_id,task_id,objective,profile_revision,roles,assignment,created_by}),scope=`${organization_id}:create`,key=idempotencyId(scope,idempotency_key),prior=data.dispatch_idempotency[key];
@@ -212,6 +274,32 @@ export function createAccessStore(root) {
       check(!data.dispatch_approvals[approvalKey],'DISPATCH_APPROVAL_ALREADY_EXISTS');data.dispatch_approvals[approvalKey]=approval;
       task.status='QUEUED';task.dispatches[0].status='QUEUED';task.updated_at=new Date(now).toISOString();
       const response={task:dispatchPublicTask(task),approval:structuredClone(approval)};data.dispatch_idempotency[key]={scope,key:idempotency_key,request_digest,response:structuredClone(response)};return response})},
+    claimDispatch({node_id,idempotency_key,now=Date.now()}){return update(data=>{const node=data.nodes[node_id];check(node&&safeKey(idempotency_key)&&
+      Number.isSafeInteger(now)&&now>=0,'INVALID_DISPATCH_CLAIM');reconcileData(data,node.organization_id,now);check(onlineAt(node,now),'NODE_UNAVAILABLE');
+      const request_digest=canonicalDigest({node_id}),scope=`${node_id}:claim`,id=idempotencyId(scope,idempotency_key),prior=data.dispatch_idempotency[id];
+      if(prior){check(prior.scope===scope&&prior.key===idempotency_key&&prior.request_digest===request_digest,'IDEMPOTENCY_CONFLICT');
+        check(prior.response.attempt.dispatch_epoch===data.dispatch_epochs[node.organization_id],'DISPATCH_EPOCH_CHANGED');return structuredClone(prior.response)}
+      const candidates=Object.values(data.dispatch_tasks).filter(task=>task.organization_id===node.organization_id&&['QUEUED','ACTIVE'].includes(task.status))
+        .flatMap(task=>task.dispatches.filter(item=>item.status==='QUEUED'&&item.node_id===node_id).map(item=>({task,item})))
+        .sort((left,right)=>left.task.created_at.localeCompare(right.task.created_at)||left.item.index-right.item.index);
+      check(candidates.length>0,'NO_ELIGIBLE_DISPATCH');const {task,item}=candidates[0];check(task.dispatch_epoch===data.dispatch_epochs[node.organization_id],
+        'DISPATCH_EPOCH_CHANGED');check(data.orchestration_profiles[node.organization_id]?.revision===task.profile_revision,'ORCHESTRATION_PROFILE_CHANGED');
+      let approval=approvalForTask(data,task,{consumed:item.role!=='head'});check(approval,'DISPATCH_APPROVAL_NOT_FOUND');
+      if(item.role==='head'){check(approval.expires_at>now,'DISPATCH_APPROVAL_EXPIRED');approval.consumed_at=now;approval.activation_receipt=canonicalDigest({
+        approval_digest:approval.approval_digest,consumed_at:now,node_id,dispatch_id:item.dispatch_id,dispatch_epoch:task.dispatch_epoch});task.status='ACTIVE'}
+      check(approval.activation_receipt,'DISPATCH_APPROVAL_NOT_CONSUMED');const attempt_id=`attempt-${randomUUID()}`,timestamp=new Date(now).toISOString();
+      const attempt={schema_version:1,attempt_id,organization_id:task.organization_id,task_id:task.task_id,dispatch_id:item.dispatch_id,role:item.role,node_id,
+        approval_id:approval.approval_id,approval_digest:approval.approval_digest,activation_receipt:approval.activation_receipt,dispatch_epoch:task.dispatch_epoch,
+        status:'CLAIMED',event_sequence:0,lease_started_at:now,lease_expires_at:now+120_000,observed_started_at:null,observed_finished_at:null,
+        result_digest:null,evidence_digest:null,recovery_reason:null,created_at:timestamp,updated_at:timestamp};
+      data.dispatch_attempts[attempt_id]=attempt;item.attempt_id=attempt_id;item.status='CLAIMED';task.updated_at=timestamp;
+      const response={envelope:publicEnvelope(task,item),attempt:structuredClone(attempt),activation_receipt:approval.activation_receipt};
+      data.dispatch_idempotency[id]={scope,key:idempotency_key,request_digest,response:structuredClone(response)};return response})},
+    startDispatch(input){return roleEvent('started',input)},
+    progressDispatch(input){return roleEvent('progress',input)},
+    finishDispatch(input){return roleEvent('finished',input)},
+    reconcileDispatches({organization_id,now=Date.now()}){return update(data=>{check(validOrganizationId(organization_id)&&data.organizations[organization_id],
+      'UNKNOWN_ORGANIZATION');reconcileData(data,organization_id,now);return {organization_id,dispatch_epoch:data.dispatch_epochs[organization_id]}})},
     saveOrchestrationProfile({organization_id,mode,head_model_id,assignments}){return update(data=>{check(validOrganizationId(organization_id)&&
       data.organizations[organization_id]&&['automatic','manual'].includes(mode)&&assignments&&typeof assignments==='object'&&!Array.isArray(assignments)&&Object.keys(assignments).length===4&&
       ['planner','coder','reviewer','validator'].every(role=>Object.hasOwn(assignments,role)),'INVALID_ORCHESTRATION_PROFILE');
