@@ -57,7 +57,7 @@ Controller 상태와 별도의 접근 데이터 디렉터리를 절대 경로로
 npm run studio -- --state-root /absolute/controller-state --access-root /absolute/eoduksini-access
 ```
 
-`--access-root`는 GitHub 계정, 조직, Provider·Model 메타데이터, Node capability, 토큰 해시, 결제 공급자·정기결제 번호, 내부 결제 요청과 서버 통보 중복 처리 ID를 저장합니다. 휴대전화 번호, OAuth provider token, Client Secret, 페이앱 연동 KEY/VALUE, 원문 Node 등록·Agent 토큰은 저장하지 않습니다.
+`--access-root`는 GitHub 계정, 조직, Provider·Model 메타데이터, Node capability, 토큰 해시, 결제 공급자·정기결제 번호, 내부 결제 요청과 서버 통보 중복 처리 ID, v8 Task Dispatch 원장을 저장합니다. 휴대전화 번호, OAuth provider token, Client Secret, 페이앱 연동 KEY/VALUE, 원문 Node 등록·Agent 토큰은 저장하지 않습니다.
 
 ## 고객 Node Agent 등록
 
@@ -70,13 +70,21 @@ npm run agent -- run /absolute/private-agent-state
 
 Windows PowerShell에서는 `$env:EODUKSINI_ENROLLMENT_TOKEN='발급받은값'`으로 설정한 뒤 같은 `npm run agent -- enroll ...` 명령을 실행합니다. `run`은 30초마다 outbound HTTPS heartbeat를 보냅니다. `EODUKSINI_AGENT_ADAPTERS=ollama,openai-compatible`처럼 이 노드에 실제 설정된 Adapter ID만 선택적으로 보고할 수 있습니다. Agent 상태 파일에는 장기 자격증명이 있으므로 공유·동기화 폴더나 저장소 안에 두지 않습니다.
 
+Studio의 Step 06에서 작업을 만들면 상태는 `AWAITING_APPROVAL`이며 Agent가 가져갈 수 없습니다. owner/admin이 표시된 exact task digest를 별도 승인하면 `QUEUED`가 됩니다. 승인 권한은 Head Agent의 첫 claim 시 한 번만 소비됩니다. Agent의 전송 라이브러리는 `claimDispatch`, `startDispatch`, `progressDispatch`, `finishDispatch`를 제공하며 credential은 Authorization 헤더에만 둡니다. 현재 CLI에는 읽기 가능한 claim 명령만 노출합니다.
+
+```sh
+npm run agent -- claim /absolute/private-agent-state claim-unique-key
+```
+
+각 역할의 120초 lease 또는 heartbeat가 불확실해지면 자동으로 다시 배정하지 않습니다. Studio에는 `RECOVERY_REQUIRED`와 차단된 후속 역할이 표시되며 복구 버튼은 제공하지 않습니다. 이 API는 전달 원장일 뿐 모델·명령을 실행하지 않습니다.
+
 ## 접근 규칙
 
 - `/`: 공개
 - `/account`: 로그인 필요
 - `/studio`, `/api/snapshot`: 로그인과 활성 Core/Pro 구독 또는 관리자 권한 필요. 고급 계측·경제성 필드는 Pro와 관리자에게만 반환
-- `/settings`, `/api/organization/*`: 활성 구독 조직의 설정·조회. Provider·Model·등록 토큰·Profile 저장과 revision 고정 역할 배정 평가는 owner/admin만 허용
-- `/api/agent/enroll`, `/api/agent/heartbeat`: 브라우저 세션 대신 일회성 등록 토큰 또는 Agent Bearer 자격증명 사용
+- `/settings`, `/api/organization/*`: 활성 구독 조직의 설정·조회. Provider·Model·등록 토큰·Profile 저장, revision 고정 역할 배정, Task 생성·승인은 owner/admin만 허용
+- `/api/agent/enroll`, `/api/agent/heartbeat`, `/api/agent/tasks/claim`, `/api/agent/dispatches/*`: 브라우저 세션 대신 일회성 등록 토큰 또는 Agent Bearer 자격증명 사용
 - `/admin`, `/api/admin/summary`: 로그인과 관리자 GitHub ID 필요
 - `/api/payapp/feedback`: 공개 HTTPS 서버 통보 전용, 폼 본문과 결제 계약 검증
 - 나머지 상태 변경 API: 동일 Origin과 `X-Eoduksini-Request: 1`을 함께 검사

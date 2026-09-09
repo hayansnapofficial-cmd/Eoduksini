@@ -30,7 +30,7 @@ Understood as: Eoduksini is a multi-tenant control plane that orchestrates each 
 6. Tenant-scoped task dispatch, evidence, and recovery
 7. Usage statements and optional verified-savings pricing
 
-The current JSON access store remains a single-host development implementation. Production multi-instance operation requires transactional tenant storage, durable sessions, encrypted secret handling, rate limits, backup and restore, and an authenticated agent transport.
+The current v8 JSON access store remains a single-process, single-host development implementation. Production multi-instance operation requires transactional tenant storage, durable sessions, encrypted secret handling, rate limits, backup and restore, and a production-authenticated agent transport.
 
 ## Provider and model registry slice
 
@@ -54,4 +54,12 @@ The server validates every referenced model, node, role capability, provider ada
 
 An organization owner or administrator may evaluate a bounded Task ID and requested role set against one exact orchestration-profile revision. The server derives the organization from the authenticated session, rechecks active models, provider adapters, active nodes, and a heartbeat no older than 90 seconds, then returns a deterministic decision digest. Automatic mode prefers exact role capability and current node capacity; manual mode fails closed when a fixed assignment is missing or unavailable. Reviewer and validator assignments must use both a different model and a different node from the coder assignment.
 
-The response records missing assignments, independence failures, and the current absence of cost and privacy optimization policy explicitly. It always declares model execution, remote execution, repository writes, approval, Git publication, and deployment authority as false. The result is not persisted as a task or dispatch authorization. Tenant-scoped task storage, consumption of the exact decision digest, dispatch evidence, and recovery remain delivery step 6.
+The response records missing assignments, independence failures, and the current absence of cost and privacy optimization policy explicitly. It always declares model execution, remote execution, repository writes, approval, Git publication, and deployment authority as false. The assignment check itself is not a task or dispatch authorization.
+
+## Tenant task dispatch slice
+
+An organization owner or administrator can persist an `AWAITING_APPROVAL` task from a server-recomputed assignment and then approve its exact immutable digest as a separate action. The graph always starts with Head and appends selected Planner, Coder, Reviewer, and Validator roles in canonical order. The first eligible Head Agent claim consumes the one-time approval and records an activation receipt; later roles open one at a time only after the predecessor result and evidence digests are stored.
+
+Agent claims and lifecycle events are bound to tenant, assigned node, attempt, task and graph digests, exact profile revision, organization dispatch epoch, idempotency key, and monotonic event sequence. A role lease lasts 120 seconds. Lazy authoritative reconciliation checks lease and node heartbeat before reads and transitions. Uncertain claimed work becomes `RECOVERY_REQUIRED`, blocks successors, and advances the organization epoch instead of being automatically retried.
+
+This slice records and transports work only. It performs no model invocation, command execution, repository write, Git publication, database mutation, deployment, or automatic recovery. Delivery step 6 is therefore implemented as a bounded ledger and transport, not as an execution host. Transactional multi-instance persistence and an explicit evidence-based recovery workflow remain subsequent work.
