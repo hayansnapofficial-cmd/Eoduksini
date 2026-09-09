@@ -17,6 +17,15 @@ export const capabilities=()=>({agent_version:'0.1.0',os:platform(),arch:arch(),
   gpu_status:'unavailable',gpu_devices:[],adapters:adapters()});
 const request=async(url,options)=>{const response=await fetch(url,{...options,signal:AbortSignal.timeout(15_000)}),value=await response.json();
   if(!response.ok)fail(value.code??'CONTROL_PLANE_REQUEST_FAILED');return value};
+const safeKey=value=>typeof value==='string'&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
+const observed=value=>typeof value==='string'&&value.length<=32&&Number.isFinite(Date.parse(value));
+const hash=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
+const dispatchContext=value=>{if(!value||typeof value!=='object'||!value.envelope||!value.attempt||typeof value.envelope.dispatch_id!=='string'||
+  !Number.isSafeInteger(value.envelope.dispatch_epoch)||typeof value.attempt.attempt_id!=='string'||!Number.isSafeInteger(value.attempt.event_sequence))
+  fail('INVALID_DISPATCH_RECEIPT');return value};
+const agentPost=async(stateRoot,path,payload)=>{const value=load(stateFile(stateRoot));return request(value.origin+path,{method:'POST',
+  headers:{Authorization:`Bearer ${value.agent_credential}`,'Content-Type':'application/json'},body:JSON.stringify(payload)})};
+const withEnvelope=(prior,value)=>({...value,envelope:prior.envelope});
 const save=(file,value)=>{const existing=lstatSync(file,{throwIfNoEntry:false});if(existing)fail('AGENT_ALREADY_ENROLLED');const temporary=join(dirname(file),`.agent-${randomUUID()}.tmp`);
   writeFileSync(temporary,JSON.stringify(value,null,2)+'\n',{encoding:'utf8',mode:0o600,flag:'wx'});renameSync(temporary,file)};
 const load=file=>{const item=lstatSync(file,{throwIfNoEntry:false});if(!item?.isFile()||item.isSymbolicLink()||item.size>16*1024)fail('INVALID_AGENT_STATE');
@@ -29,6 +38,24 @@ export async function enroll(controlPlane,stateRoot,enrollmentToken=process.env.
   save(file,{origin:base,node_id:value.node.node_id,agent_credential:value.agent_credential});return value.node}
 export async function heartbeat(stateRoot){const value=load(stateFile(stateRoot));return (await request(value.origin+'/api/agent/heartbeat',{method:'POST',
   headers:{Authorization:`Bearer ${value.agent_credential}`,'Content-Type':'application/json'},body:JSON.stringify({capabilities:capabilities()})})).node}
+export async function claimDispatch(stateRoot,idempotencyKey){if(!safeKey(idempotencyKey))fail('INVALID_DISPATCH_IDEMPOTENCY_KEY');
+  return dispatchContext(await agentPost(stateRoot,'/api/agent/tasks/claim',{idempotency_key:idempotencyKey}))}
+export async function startDispatch(stateRoot,receipt,idempotencyKey,observedAt=new Date().toISOString()){receipt=dispatchContext(receipt);
+  if(!safeKey(idempotencyKey)||!observed(observedAt))fail('INVALID_DISPATCH_EVENT');const value=await agentPost(stateRoot,
+    `/api/agent/dispatches/${encodeURIComponent(receipt.envelope.dispatch_id)}/started`,{attempt_id:receipt.attempt.attempt_id,
+      expected_epoch:receipt.envelope.dispatch_epoch,event_sequence:receipt.attempt.event_sequence+1,observed_started_at:observedAt,idempotency_key:idempotencyKey});
+  return dispatchContext(withEnvelope(receipt,value))}
+export async function progressDispatch(stateRoot,receipt,idempotencyKey,observedAt=new Date().toISOString()){receipt=dispatchContext(receipt);
+  if(!safeKey(idempotencyKey)||!observed(observedAt))fail('INVALID_DISPATCH_EVENT');const value=await agentPost(stateRoot,
+    `/api/agent/dispatches/${encodeURIComponent(receipt.envelope.dispatch_id)}/progress`,{attempt_id:receipt.attempt.attempt_id,
+      expected_epoch:receipt.envelope.dispatch_epoch,event_sequence:receipt.attempt.event_sequence+1,observed_at:observedAt,idempotency_key:idempotencyKey});
+  return dispatchContext(withEnvelope(receipt,value))}
+export async function finishDispatch(stateRoot,receipt,idempotencyKey,status,resultDigest,evidenceDigest,observedAt=new Date().toISOString()){
+  receipt=dispatchContext(receipt);if(!safeKey(idempotencyKey)||!['SUCCEEDED','FAILED'].includes(status)||!hash(resultDigest)||!hash(evidenceDigest)||
+    !observed(observedAt))fail('INVALID_DISPATCH_EVENT');const value=await agentPost(stateRoot,
+    `/api/agent/dispatches/${encodeURIComponent(receipt.envelope.dispatch_id)}/finished`,{attempt_id:receipt.attempt.attempt_id,
+      expected_epoch:receipt.envelope.dispatch_epoch,event_sequence:receipt.attempt.event_sequence+1,status,result_digest:resultDigest,
+      evidence_digest:evidenceDigest,observed_finished_at:observedAt,idempotency_key:idempotencyKey});return dispatchContext(withEnvelope(receipt,value))}
 export async function run(stateRoot,intervalMs=30_000){if(!Number.isSafeInteger(intervalMs)||intervalMs<10_000||intervalMs>300_000)fail('INVALID_HEARTBEAT_INTERVAL');
   for(;;){const node=await heartbeat(stateRoot);console.log(JSON.stringify({status:'HEARTBEAT_OK',node_id:node.node_id,last_seen_at:node.last_seen_at}));
     await new Promise(resolveWait=>setTimeout(resolveWait,intervalMs))}}
@@ -36,5 +63,6 @@ export async function run(stateRoot,intervalMs=30_000){if(!Number.isSafeInteger(
 async function main(argv){const [command,...args]=argv;if(command==='enroll'&&args.length===2){const node=await enroll(args[0],args[1]);
     console.log(JSON.stringify({status:'ENROLLED',node_id:node.node_id,display_name:node.display_name}));return}
   if(command==='heartbeat'&&args.length===1){const node=await heartbeat(args[0]);console.log(JSON.stringify({status:'HEARTBEAT_OK',node_id:node.node_id,last_seen_at:node.last_seen_at}));return}
+  if(command==='claim'&&args.length===2){console.log(JSON.stringify(await claimDispatch(args[0],args[1])));return}
   if(command==='run'&&args.length===1){await run(args[0]);return}fail('USAGE: enroll <origin> <absolute-state-root> | heartbeat <absolute-state-root> | run <absolute-state-root>')}
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))main(process.argv.slice(2)).catch(error=>{console.error(error.message);process.exitCode=1});
