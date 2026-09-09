@@ -1,12 +1,15 @@
 import { mkdirSync, lstatSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { digest as canonicalDigest } from '../core/contracts.mjs';
 import { isPaidPlan, subscriptionEntitlement } from './plans.mjs';
 import { isProviderId } from './provider-catalog.mjs';
+import { createDispatchTask as buildDispatchTask, dispatchApproval, dispatchPublicTask, dispatchTaskDigest } from './task-dispatch.mjs';
 
 const SUBSCRIPTION=new Set(['active','trialing','past_due','canceled','unpaid','incomplete','incomplete_expired','paused']);
 const PROVIDERS=new Set(['payapp','stripe']);
-const empty=()=>({schema_version:7,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{},provider_connections:{},models:{},node_enrollments:{},nodes:{},orchestration_profiles:{}});
+const empty=()=>({schema_version:8,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{},provider_connections:{},models:{},node_enrollments:{},nodes:{},orchestration_profiles:{},
+  dispatch_epochs:{},dispatch_tasks:{},dispatch_approvals:{},dispatch_attempts:{},dispatch_idempotency:{}});
 const validId=value=>typeof value==='string'&&/^[1-9][0-9]{0,31}$/.test(value);
 const validOrganizationId=value=>typeof value==='string'&&/^org-[1-9][0-9]{0,31}$/.test(value);
 const uuid='[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
@@ -19,6 +22,11 @@ const safeText=(value,max=256)=>typeof value==='string'&&value.length>0&&value.l
 const safeModelReference=value=>safeText(value,256)&&!/[\u0000-\u001f\u007f]/.test(value)&&value.trim()===value;
 const nullableText=(value,max=256)=>value===null||safeText(value,max);
 const check=(condition,reason)=>{if(!condition)throw new Error(reason)};
+const safeKey=(value,max=128)=>safeText(value,max)&&/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value);
+const objectCollection=(value,max)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length<=max;
+const dispatchTaskKey=(organizationId,taskId)=>`${organizationId}:${taskId}`;
+const dispatchApprovalKey=(organizationId,approvalId)=>`${organizationId}:${approvalId}`;
+const idempotencyId=(scope,key)=>canonicalDigest({scope,key});
 const validateCapabilities=value=>check(value&&Object.keys(value).length===8&&safeText(value.agent_version,32)&&
   ['aix','darwin','freebsd','linux','openbsd','sunos','win32'].includes(value.os)&&safeText(value.arch,32)&&
   Number.isSafeInteger(value.cpu_logical)&&value.cpu_logical>=1&&value.cpu_logical<=4096&&Number.isSafeInteger(value.memory_bytes)&&
@@ -47,12 +55,14 @@ function migrate(data) {
   if(data?.schema_version===4)data={...data,schema_version:5,provider_connections:{},models:{}};
   if(data?.schema_version===5)data={...data,schema_version:6,node_enrollments:{},nodes:{}};
   if(data?.schema_version===6)data={...data,schema_version:7,orchestration_profiles:{}};
+  if(data?.schema_version===7)data={...data,schema_version:8,dispatch_epochs:Object.fromEntries(Object.keys(data.organizations??{}).map(id=>[id,1])),
+    dispatch_tasks:{},dispatch_approvals:{},dispatch_attempts:{},dispatch_idempotency:{}};
   return data;
 }
 
 function validate(input) {
   const data=migrate(input);
-  check(data&&Object.keys(data).length===11&&data.schema_version===7&&data.users&&typeof data.users==='object'&&!Array.isArray(data.users)&&
+  check(data&&Object.keys(data).length===16&&data.schema_version===8&&data.users&&typeof data.users==='object'&&!Array.isArray(data.users)&&
     Object.keys(data.users).length<=10_000&&data.billing_requests&&typeof data.billing_requests==='object'&&!Array.isArray(data.billing_requests)&&
     Object.keys(data.billing_requests).length<=10_000&&data.organizations&&typeof data.organizations==='object'&&!Array.isArray(data.organizations)&&
     Object.keys(data.organizations).length<=10_000&&data.memberships&&typeof data.memberships==='object'&&!Array.isArray(data.memberships)&&
@@ -60,7 +70,9 @@ function validate(input) {
     Object.keys(data.provider_connections).length<=50_000&&data.models&&typeof data.models==='object'&&!Array.isArray(data.models)&&
     Object.keys(data.models).length<=100_000&&data.node_enrollments&&typeof data.node_enrollments==='object'&&!Array.isArray(data.node_enrollments)&&
     Object.keys(data.node_enrollments).length<=50_000&&data.nodes&&typeof data.nodes==='object'&&!Array.isArray(data.nodes)&&Object.keys(data.nodes).length<=50_000&&
-    data.orchestration_profiles&&typeof data.orchestration_profiles==='object'&&!Array.isArray(data.orchestration_profiles)&&Object.keys(data.orchestration_profiles).length<=10_000,
+    data.orchestration_profiles&&typeof data.orchestration_profiles==='object'&&!Array.isArray(data.orchestration_profiles)&&Object.keys(data.orchestration_profiles).length<=10_000&&
+    objectCollection(data.dispatch_epochs,10_000)&&objectCollection(data.dispatch_tasks,50_000)&&objectCollection(data.dispatch_approvals,50_000)&&
+    objectCollection(data.dispatch_attempts,50_000)&&objectCollection(data.dispatch_idempotency,50_000),
     'INVALID_ACCESS_STORE');
   check(Array.isArray(data.processed_webhook_ids)&&data.processed_webhook_ids.length<=1000&&
     data.processed_webhook_ids.every(id=>safeText(id,256))&&new Set(data.processed_webhook_ids).size===data.processed_webhook_ids.length,
@@ -118,6 +130,30 @@ function validate(input) {
         check(assignment&&Object.keys(assignment).length===2&&model?.organization_id===id&&model.status==='active'&&
           (model.role_capabilities.includes(role)||model.role_capabilities.includes('general'))&&node?.organization_id===id&&node.status==='active'&&
           node.adapters.includes(connection?.provider_id),'INVALID_ACCESS_STORE')}}}
+  check(Object.keys(data.dispatch_epochs).length===Object.keys(data.organizations).length,'INVALID_ACCESS_STORE');
+  for(const [id,epoch] of Object.entries(data.dispatch_epochs))check(data.organizations[id]&&Number.isSafeInteger(epoch)&&epoch>=1,'INVALID_ACCESS_STORE');
+  for(const [id,task] of Object.entries(data.dispatch_tasks)){check(task&&Object.keys(task).length===16&&id===dispatchTaskKey(task.organization_id,task.task_id)&&
+    data.organizations[task.organization_id]&&dispatchTaskDigest(task)===task.task_digest&&task.dispatch_epoch<=data.dispatch_epochs[task.organization_id]&&
+    ['AWAITING_APPROVAL','QUEUED','ACTIVE','SUCCEEDED','FAILED','RECOVERY_REQUIRED'].includes(task.status)&&Array.isArray(task.dispatches)&&
+    task.dispatches.length>=2&&task.dispatches.length<=5,'INVALID_ACCESS_STORE');
+    for(const [index,item] of task.dispatches.entries())check(item&&Object.keys(item).length===12&&item.dispatch_id===`${task.task_id}:${item.role}`&&item.index===index&&
+      ['head','planner','coder','reviewer','validator'].includes(item.role)&&data.models[item.model_id]?.organization_id===task.organization_id&&
+      data.nodes[item.node_id]?.organization_id===task.organization_id&&isProviderId(item.provider_id)&&
+      (index===0?item.predecessor_dispatch_id===null:item.predecessor_dispatch_id===task.dispatches[index-1].dispatch_id)&&
+      (item.predecessor_result_digest===null||validHash(item.predecessor_result_digest))&&
+      (item.predecessor_evidence_digest===null||validHash(item.predecessor_evidence_digest))&&
+      ['WAITING_APPROVAL','WAITING_DEPENDENCY','QUEUED','CLAIMED','RUNNING','SUCCEEDED','FAILED','RECOVERY_REQUIRED','BLOCKED'].includes(item.status)&&
+      (item.attempt_id===null||safeKey(item.attempt_id))&&nullableText(item.recovery_reason,256),'INVALID_ACCESS_STORE')}
+  for(const [id,approval] of Object.entries(data.dispatch_approvals)){const task=data.dispatch_tasks[dispatchTaskKey(approval?.organization_id,approval?.task_id)];
+    check(approval&&Object.keys(approval).length===15&&id===dispatchApprovalKey(approval.organization_id,approval.approval_id)&&task&&
+      approval.task_digest===task.task_digest&&approval.role_graph_digest===task.role_graph_digest&&approval.assignment_digest===task.assignment_digest&&
+      approval.profile_revision===task.profile_revision&&approval.dispatch_epoch===task.dispatch_epoch&&validId(approval.approved_by)&&
+      Number.isSafeInteger(approval.issued_at)&&Number.isSafeInteger(approval.expires_at)&&approval.expires_at>approval.issued_at&&
+      (approval.consumed_at===null||Number.isSafeInteger(approval.consumed_at))&&nullableText(approval.activation_receipt,64)&&validHash(approval.approval_digest),
+    'INVALID_ACCESS_STORE')}
+  for(const [id,entry] of Object.entries(data.dispatch_idempotency))check(validHash(id)&&entry&&Object.keys(entry).length===4&&safeText(entry.scope,160)&&
+    safeKey(entry.key)&&validHash(entry.request_digest)&&entry.response&&typeof entry.response==='object'&&!Array.isArray(entry.response)&&
+    Buffer.byteLength(JSON.stringify(entry.response))<=256*1024,'INVALID_ACCESS_STORE');
   return structuredClone(data);
 }
 
@@ -132,7 +168,7 @@ export function createAccessStore(root) {
   const raw=()=>{check(lstatSync(file).size<=8*1024*1024,'ACCESS_STORE_TOO_LARGE');return JSON.parse(readFileSync(file,'utf8'))};
   const save=data=>{data=validate(data);const temporary=join(root,`.access-${randomUUID()}.tmp`);
     writeFileSync(temporary,JSON.stringify(data,null,2)+'\n',{encoding:'utf8',mode:0o600,flag:'wx'});renameSync(temporary,file)};
-  if(raw().schema_version!==7)save(migrate(raw()));
+  if(raw().schema_version!==8)save(migrate(raw()));
   const load=()=>validate(raw());let queue=Promise.resolve();
   const update=operation=>{const result=queue.then(()=>{const data=load(),value=operation(data);save(data);return value});queue=result.catch(()=>{});return result};
   return {
@@ -151,6 +187,31 @@ export function createAccessStore(root) {
         .sort((left,right)=>left.created_at.localeCompare(right.created_at)||left.node_id.localeCompare(right.node_id))},
     orchestrationProfile(organizationId){const data=load();check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
       return data.orchestration_profiles[organizationId]?structuredClone(data.orchestration_profiles[organizationId]):null},
+    dispatchEpoch(organizationId){const data=load();check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
+      return data.dispatch_epochs[organizationId]},
+    dispatchTasks(organizationId){const data=load();check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
+      return Object.values(data.dispatch_tasks).filter(task=>task.organization_id===organizationId).sort((left,right)=>left.created_at.localeCompare(right.created_at)||
+        left.task_id.localeCompare(right.task_id)).map(task=>dispatchPublicTask(task,Object.values(data.dispatch_attempts).filter(attempt=>attempt.task_id===task.task_id&&
+          attempt.organization_id===organizationId)))},
+    createDispatchTask({organization_id,task_id,objective,profile_revision,roles,assignment,created_by,idempotency_key,now=Date.now()}){return update(data=>{
+      check(validOrganizationId(organization_id)&&data.organizations[organization_id]&&safeKey(idempotency_key),'INVALID_DISPATCH_TASK');
+      const request_digest=canonicalDigest({organization_id,task_id,objective,profile_revision,roles,assignment,created_by}),scope=`${organization_id}:create`,key=idempotencyId(scope,idempotency_key),prior=data.dispatch_idempotency[key];
+      if(prior){check(prior.scope===scope&&prior.key===idempotency_key&&prior.request_digest===request_digest,'IDEMPOTENCY_CONFLICT');return structuredClone(prior.response)}
+      check(data.orchestration_profiles[organization_id]?.revision===profile_revision,'ORCHESTRATION_PROFILE_CHANGED');
+      const task=buildDispatchTask({organization_id,task_id,objective,profile_revision,roles,assignment,dispatch_epoch:data.dispatch_epochs[organization_id],created_by,now});
+      const taskKey=dispatchTaskKey(organization_id,task_id);check(!data.dispatch_tasks[taskKey],'DISPATCH_TASK_ALREADY_EXISTS');data.dispatch_tasks[taskKey]=task;
+      const response={task:dispatchPublicTask(task)};data.dispatch_idempotency[key]={scope,key:idempotency_key,request_digest,response:structuredClone(response)};return response})},
+    approveDispatchTask({organization_id,task_id,expected_task_digest,approval_id,approved_by,ttl_ms,idempotency_key,now=Date.now()}){return update(data=>{
+      check(validOrganizationId(organization_id)&&data.organizations[organization_id]&&safeKey(idempotency_key),'INVALID_DISPATCH_APPROVAL');
+      const request_digest=canonicalDigest({organization_id,task_id,expected_task_digest,approval_id,approved_by,ttl_ms}),scope=`${organization_id}:approve`,key=idempotencyId(scope,idempotency_key),prior=data.dispatch_idempotency[key];
+      if(prior){check(prior.scope===scope&&prior.key===idempotency_key&&prior.request_digest===request_digest,'IDEMPOTENCY_CONFLICT');return structuredClone(prior.response)}
+      const task=data.dispatch_tasks[dispatchTaskKey(organization_id,task_id)];check(task,'DISPATCH_TASK_NOT_FOUND');check(task.task_digest===expected_task_digest,'TASK_DIGEST_MISMATCH');
+      check(task.status==='AWAITING_APPROVAL','DISPATCH_TASK_NOT_APPROVABLE');check(data.orchestration_profiles[organization_id]?.revision===task.profile_revision,
+        'ORCHESTRATION_PROFILE_CHANGED');check(data.dispatch_epochs[organization_id]===task.dispatch_epoch,'DISPATCH_EPOCH_CHANGED');
+      const approval=dispatchApproval({approval_id,task,approved_by,ttl_ms,now}),approvalKey=dispatchApprovalKey(organization_id,approval_id);
+      check(!data.dispatch_approvals[approvalKey],'DISPATCH_APPROVAL_ALREADY_EXISTS');data.dispatch_approvals[approvalKey]=approval;
+      task.status='QUEUED';task.dispatches[0].status='QUEUED';task.updated_at=new Date(now).toISOString();
+      const response={task:dispatchPublicTask(task),approval:structuredClone(approval)};data.dispatch_idempotency[key]={scope,key:idempotency_key,request_digest,response:structuredClone(response)};return response})},
     saveOrchestrationProfile({organization_id,mode,head_model_id,assignments}){return update(data=>{check(validOrganizationId(organization_id)&&
       data.organizations[organization_id]&&['automatic','manual'].includes(mode)&&assignments&&typeof assignments==='object'&&!Array.isArray(assignments)&&Object.keys(assignments).length===4&&
       ['planner','coder','reviewer','validator'].every(role=>Object.hasOwn(assignments,role)),'INVALID_ORCHESTRATION_PROFILE');
@@ -209,6 +270,7 @@ export function createAccessStore(root) {
         plan_id:prior?.plan_id??null};
       const organization_id=`org-${id}`,membership_id=`${organization_id}:${id}`;if(!data.organizations[organization_id]){
         const now=data.users[id].updated_at;data.organizations[organization_id]={organization_id,name:`${identity.login} Workspace`,slug:`github-${id}`,created_at:now,updated_at:now}}
+      if(!data.dispatch_epochs[organization_id])data.dispatch_epochs[organization_id]=1;
       if(!data.memberships[membership_id])data.memberships[membership_id]={organization_id,github_id:id,role:'owner',created_at:data.users[id].updated_at};
       return structuredClone(data.users[id])})},
     createBillingRequest(request){return update(data=>{check(safeText(request.request_id,128)&&validId(String(request.github_id))&&
