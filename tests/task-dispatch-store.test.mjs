@@ -29,6 +29,13 @@ async function fixture() {
   return {parent,root,store,organization_id,profile,assignment,models,nodes,createInput};
 }
 const clean=value=>rmSync(value.parent,{recursive:true,force:true});
+const H1='1'.repeat(64),H2='2'.repeat(64);
+async function approved(value) {
+  const created=await value.store.createDispatchTask(value.createInput());
+  await value.store.approveDispatchTask({organization_id:value.organization_id,task_id:'TASK-1',expected_task_digest:created.task.task_digest,
+    approval_id:'APPROVAL-1',approved_by:'42',ttl_ms:60_000,idempotency_key:'approve-1',now:now+1000});
+  return created.task;
+}
 
 test('v7 migrates to v8 without changing existing registry data',async()=>{
   const value=await fixture();try{const file=join(value.root,'access.json'),before=JSON.parse(readFileSync(file,'utf8'));
@@ -58,4 +65,44 @@ test('approval binds current digest profile and epoch but does not consume autho
       idempotency_key:'approve-1',now:now+1000}),approved);
     await assert.rejects(value.store.approveDispatchTask({organization_id:value.organization_id,task_id:'TASK-1',expected_task_digest:'f'.repeat(64),
       approval_id:'APPROVAL-2',approved_by:'42',ttl_ms:60_000,idempotency_key:'approve-2',now:now+1000}),/TASK_DIGEST_MISMATCH/)
+  }finally{clean(value)}});
+
+test('only the assigned head node consumes approval and creates one attempt',async()=>{
+  const value=await fixture();try{await approved(value);const headNode=value.assignment.head_assignment.node_id,
+    otherNode=value.nodes.find(node=>node.node_id!==headNode).node_id;
+    await assert.rejects(value.store.claimDispatch({node_id:otherNode,idempotency_key:'claim-wrong',now:now+2000}),/NO_ELIGIBLE_DISPATCH/);
+    const claim=await value.store.claimDispatch({node_id:headNode,idempotency_key:'claim-head',now:now+2000});
+    assert.equal(claim.envelope.role,'head');assert.equal(claim.attempt.event_sequence,0);assert.equal(claim.attempt.lease_expires_at,now+122_000);
+    assert.match(claim.activation_receipt,/^[0-9a-f]{64}$/);assert.deepEqual(await value.store.claimDispatch({node_id:headNode,
+      idempotency_key:'claim-head',now:now+5000}),claim);
+    await assert.rejects(value.store.claimDispatch({node_id:headNode,idempotency_key:'claim-again',now:now+5000}),/NO_ELIGIBLE_DISPATCH/)
+  }finally{clean(value)}});
+
+test('success opens exactly the next assigned role with predecessor digests',async()=>{
+  const value=await fixture();try{await approved(value);const headNode=value.assignment.head_assignment.node_id,
+    claim=await value.store.claimDispatch({node_id:headNode,idempotency_key:'claim-head',now:now+2000});
+    await value.store.startDispatch({node_id:headNode,dispatch_id:claim.envelope.dispatch_id,attempt_id:claim.attempt.attempt_id,
+      expected_epoch:1,event_sequence:1,observed_started_at:new Date(now+2500).toISOString(),idempotency_key:'start-head',now:now+3000});
+    await value.store.finishDispatch({node_id:headNode,dispatch_id:claim.envelope.dispatch_id,attempt_id:claim.attempt.attempt_id,
+      expected_epoch:1,event_sequence:2,status:'SUCCEEDED',result_digest:H1,evidence_digest:H2,
+      observed_finished_at:new Date(now+3500).toISOString(),idempotency_key:'finish-head',now:now+4000});
+    const plannerNode=value.assignment.assignments.planner.node_id,next=await value.store.claimDispatch({node_id:plannerNode,
+      idempotency_key:'claim-planner',now:now+5000});
+    assert.equal(next.envelope.role,'planner');assert.equal(next.envelope.predecessor_result_digest,H1);
+    assert.equal(next.envelope.predecessor_evidence_digest,H2)
+  }finally{clean(value)}});
+
+test('expired claimed work fences the organization and never opens a successor',async()=>{
+  const value=await fixture();try{await approved(value);const headNode=value.assignment.head_assignment.node_id,
+    claim=await value.store.claimDispatch({node_id:headNode,idempotency_key:'claim-head',now:now+2000});
+    await value.store.reconcileDispatches({organization_id:value.organization_id,now:claim.attempt.lease_expires_at});
+    const [task]=await value.store.dispatchTasks(value.organization_id,claim.attempt.lease_expires_at);
+    assert.equal(task.status,'RECOVERY_REQUIRED');assert.equal(task.dispatches[0].status,'RECOVERY_REQUIRED');
+    assert.deepEqual(task.dispatches.slice(1).map(item=>item.status),['BLOCKED','BLOCKED','BLOCKED','BLOCKED']);
+    assert.equal(value.store.dispatchEpoch(value.organization_id),2);
+    await value.store.reconcileDispatches({organization_id:value.organization_id,now:claim.attempt.lease_expires_at+1000});
+    assert.equal(value.store.dispatchEpoch(value.organization_id),2);
+    await assert.rejects(value.store.progressDispatch({node_id:headNode,dispatch_id:claim.envelope.dispatch_id,attempt_id:claim.attempt.attempt_id,
+      expected_epoch:1,event_sequence:1,observed_at:new Date(now+3000).toISOString(),idempotency_key:'late-progress',now:now+125_000}),
+    /DISPATCH_EPOCH_CHANGED/)
   }finally{clean(value)}});
