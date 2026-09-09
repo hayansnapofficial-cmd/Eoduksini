@@ -62,3 +62,11 @@ Understood as: enroll m2 as the first explicitly identified metering node and pr
 Understood as: extend a completed metered attempt with append-only, idempotent post-run evidence bound to its exact result digest: an independent review decision, an explicitly authorized user adoption decision, a versioned token-price counterfactual, and an observed or explicitly allocated energy reading. Unknown price, power, review, or adoption facts remain incomplete rather than becoming zero or inferred success. This slice adds no Studio, paid API call, automatic adoption, execution authority, Git/database/deployment mutation, or 30-task pilot.
 
 Understood as: retire any one-time script that can copy project adapter schemas into `core/schemas`. Add a project-neutral regression gate that rejects any active top-level script combining a project-adapter schema source with a Core schema target.
+
+## Tenant Task Dispatch slice — 2026-09-09
+
+Understood as: persist and transport one tenant-scoped sequential role graph in the fixed order `Head → Planner → Coder → Reviewer → Validator`, while keeping creation, explicit approval, Agent claim, lifecycle evidence, and recovery as separate transitions. The first Head claim consumes one approval activation receipt. Each successful role binds its result and evidence digests into the next role. Exact assignment digest, profile revision and organization dispatch epoch are rechecked at the transition that consumes them.
+
+Every role has one assigned-node attempt and a 120-second server-clock lease. Lease expiry or heartbeat uncertainty fences the task, blocks downstream roles, increments the organization epoch once, and requires explicit later recovery design; time alone never authorizes retry or reassignment. Reconciliation is authoritative but lazy on store operations.
+
+This slice advances the access store to v8 and remains a single-process development implementation. It adds no model invocation, command execution, repository write, Git publication, database mutation, deployment, automatic retry, distributed consensus, or production high availability. Those absences remain explicit boundaries rather than implied dispatch capabilities.

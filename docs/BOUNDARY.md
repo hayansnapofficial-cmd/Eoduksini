@@ -29,3 +29,11 @@ PREPARED 이후 결과가 불확실하면 재실행하지 않고 `RECOVERY_REQUI
 Semantic scanner는 Git 추적 파일과 Task·정책에 선언된 범위만 정적으로 읽는다. 확정된 이름·경로 교집합은 충돌 후보이고, 동적 환경키·동적 dependency·동적 DB statement·미추적 write pattern·미분석 파일은 uncertainty다. uncertainty나 충돌은 journal에 남고 control epoch를 증가시키며 `MANUAL_DECISION_REQUIRED` hold를 만든다. 현재 slice는 이 hold를 자동 해제하거나 의미를 추측하지 않으며, 완전한 언어 해석·LLM reasoner·Git/DB convergence를 주장하지 않는다.
 
 M1/M2 계측은 Controller가 직접 관측하거나 Provider Adapter가 검증한 실행 사실을 기록한다. M3 사후 사건은 exact result digest 및 초기 정책에 고정된 actor/source allowlist를 모두 통과해야 한다. 이 actor ID는 로컬 운영 정책의 신뢰 경계이지 외부 신원 인증이나 전자서명이 아니다. 가격은 비교 추정이며 유료 API 지출이 아니고, node interval 전력은 배분 근거를 별도로 유지한다. 계측·검수·채택 event는 실행·승인·잠금·병합·배포 권한을 만들지 않는다.
+
+## Tenant Task Dispatch 경계
+
+조직 owner/admin은 서버가 다시 계산한 정확한 Profile revision과 역할 배정으로 작업 그래프를 만들고, 이후 별도 요청으로 task digest·graph digest·assignment digest·epoch에 만료 승인 하나를 결속할 수 있다. 정규 순서는 Head 다음에 선택한 Planner, Coder, Reviewer, Validator이며, 역할마다 배정된 조직 Node Agent만 한 번 claim할 수 있다. 첫 Head claim만 approval activation receipt를 원자적으로 소비하고, 이후 역할은 직전 역할의 result/evidence digest가 기록된 뒤에만 열린다.
+
+Agent event는 attempt ID, 단조 event sequence, 정확한 epoch, 120초 server-clock lease로 검사한다. lease 만료나 heartbeat 불확실성은 재시도·재배정 권한이 아니다. 해당 작업과 하위 역할을 `RECOVERY_REQUIRED`/`BLOCKED`로 보존하고 조직 dispatch epoch를 한 번 올린다. 현재 자동 복구, 강제 unlock, 재queue API는 없다.
+
+Dispatch envelope의 모든 authority는 false다. 이 기능은 모델 호출, 명령 실행, 저장소 쓰기, Git 게시, 데이터베이스 변경, 배포를 수행하거나 허가하지 않는다. v8 JSON 접근 저장소는 한 프로세스의 직렬화된 개발 구현으로, 다중 호스트 트랜잭션·분산 합의·고가용성을 주장하지 않는다.
