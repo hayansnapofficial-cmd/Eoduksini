@@ -4,12 +4,13 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { digest as canonicalDigest } from '../core/contracts.mjs';
 import { isPaidPlan, subscriptionEntitlement } from './plans.mjs';
 import { isProviderId } from './provider-catalog.mjs';
-import { createDispatchTask as buildDispatchTask, dispatchApproval, dispatchPublicTask, dispatchTaskDigest } from './task-dispatch.mjs';
+import { createDispatchTask as buildDispatchTask, dispatchApproval, dispatchPublicTask, dispatchRecoveryApproval, dispatchRecoveryAssessment,
+  dispatchRecoveryDigest, dispatchTaskDigest, prepareRecoveredDispatchTask } from './task-dispatch.mjs';
 
 const SUBSCRIPTION=new Set(['active','trialing','past_due','canceled','unpaid','incomplete','incomplete_expired','paused']);
 const PROVIDERS=new Set(['payapp','stripe']);
-const empty=()=>({schema_version:8,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{},provider_connections:{},models:{},node_enrollments:{},nodes:{},orchestration_profiles:{},
-  dispatch_epochs:{},dispatch_tasks:{},dispatch_approvals:{},dispatch_attempts:{},dispatch_idempotency:{}});
+const empty=()=>({schema_version:9,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{},provider_connections:{},models:{},node_enrollments:{},nodes:{},orchestration_profiles:{},
+  dispatch_epochs:{},dispatch_tasks:{},dispatch_approvals:{},dispatch_attempts:{},dispatch_recoveries:{},dispatch_idempotency:{}});
 const validId=value=>typeof value==='string'&&/^[1-9][0-9]{0,31}$/.test(value);
 const validOrganizationId=value=>typeof value==='string'&&/^org-[1-9][0-9]{0,31}$/.test(value);
 const uuid='[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
@@ -27,13 +28,17 @@ const safeKey=(value,max=128)=>safeText(value,max)&&/^[A-Za-z0-9][A-Za-z0-9._:-]
 const objectCollection=(value,max)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length<=max;
 const dispatchTaskKey=(organizationId,taskId)=>`${organizationId}:${taskId}`;
 const dispatchApprovalKey=(organizationId,approvalId)=>`${organizationId}:${approvalId}`;
+const dispatchRecoveryKey=(organizationId,recoveryId)=>`${organizationId}:${recoveryId}`;
 const idempotencyId=(scope,key)=>canonicalDigest({scope,key});
 const validTime=value=>safeText(value,32)&&Number.isFinite(Date.parse(value));
 const onlineAt=(node,now)=>node?.status==='active'&&validTime(node.last_seen_at)&&now>=Date.parse(node.last_seen_at)&&now-Date.parse(node.last_seen_at)<=90_000;
 const attemptsForTask=(data,task)=>Object.values(data.dispatch_attempts).filter(attempt=>attempt.organization_id===task.organization_id&&attempt.task_id===task.task_id);
 const approvalForTask=(data,task,{liveAt=null,consumed=null}={})=>Object.values(data.dispatch_approvals).filter(value=>value.organization_id===task.organization_id&&
-  value.task_id===task.task_id&&(consumed===null||(consumed?value.consumed_at!==null:value.consumed_at===null))&&(liveAt===null||value.expires_at>liveAt))
+  value.task_id===task.task_id&&value.task_digest===task.task_digest&&value.dispatch_epoch===task.dispatch_epoch&&
+  (consumed===null||(consumed?value.consumed_at!==null:value.consumed_at===null))&&(liveAt===null||value.expires_at>liveAt))
   .sort((left,right)=>right.issued_at-left.issued_at)[0]??null;
+const recoveriesForTask=(data,task)=>Object.values(data.dispatch_recoveries).filter(value=>value.organization_id===task.organization_id&&value.task_id===task.task_id)
+  .sort((left,right)=>left.verified_at.localeCompare(right.verified_at)||left.recovery_id.localeCompare(right.recovery_id));
 const publicEnvelope=(task,item)=>({schema_version:1,organization_id:task.organization_id,task_id:task.task_id,dispatch_id:item.dispatch_id,
   role:item.role,objective:task.objective,model_id:item.model_id,node_id:item.node_id,provider_id:item.provider_id,task_digest:task.task_digest,
   role_graph_digest:task.role_graph_digest,assignment_digest:task.assignment_digest,profile_revision:task.profile_revision,dispatch_epoch:task.dispatch_epoch,
@@ -41,8 +46,11 @@ const publicEnvelope=(task,item)=>({schema_version:1,organization_id:task.organi
 function reconcileData(data,organizationId,now) {
   check(Number.isSafeInteger(now)&&now>=0,'INVALID_TIME');let fenced=false;
   for(const task of Object.values(data.dispatch_tasks).filter(value=>value.organization_id===organizationId)) {
-    if(task.status==='QUEUED'&&task.dispatches[0].status==='QUEUED'&&!approvalForTask(data,task,{liveAt:now,consumed:false})){
-      task.status='AWAITING_APPROVAL';task.dispatches[0].status='WAITING_APPROVAL';task.updated_at=new Date(now).toISOString()}
+    const queued=task.dispatches.find(item=>item.status==='QUEUED');
+    if(task.status==='QUEUED'&&queued&&!approvalForTask(data,task,{liveAt:now,consumed:false})){
+      const approval=approvalForTask(data,task,{consumed:false}),recovery=Boolean(approval?.recovery_digest);
+      task.status=recovery?'AWAITING_RECOVERY_APPROVAL':'AWAITING_APPROVAL';queued.status=recovery?'WAITING_RECOVERY_APPROVAL':'WAITING_APPROVAL';
+      task.updated_at=new Date(now).toISOString()}
     if(task.status!=='ACTIVE')continue;
     const active=attemptsForTask(data,task).find(value=>['CLAIMED','RUNNING'].includes(value.status));if(!active)continue;
     const node=data.nodes[active.node_id],reason=active.lease_expires_at<=now?'LEASE_EXPIRED':!onlineAt(node,now)?'NODE_HEARTBEAT_LOST':null;
@@ -83,12 +91,14 @@ function migrate(data) {
   if(data?.schema_version===6)data={...data,schema_version:7,orchestration_profiles:{}};
   if(data?.schema_version===7)data={...data,schema_version:8,dispatch_epochs:Object.fromEntries(Object.keys(data.organizations??{}).map(id=>[id,1])),
     dispatch_tasks:{},dispatch_approvals:{},dispatch_attempts:{},dispatch_idempotency:{}};
+  if(data?.schema_version===8)data={...data,schema_version:9,
+    dispatch_approvals:Object.fromEntries(Object.entries(data.dispatch_approvals??{}).map(([id,value])=>[id,{...value,recovery_digest:null}])),dispatch_recoveries:{}};
   return data;
 }
 
 function validate(input) {
   const data=migrate(input);
-  check(data&&Object.keys(data).length===16&&data.schema_version===8&&data.users&&typeof data.users==='object'&&!Array.isArray(data.users)&&
+  check(data&&Object.keys(data).length===17&&data.schema_version===9&&data.users&&typeof data.users==='object'&&!Array.isArray(data.users)&&
     Object.keys(data.users).length<=10_000&&data.billing_requests&&typeof data.billing_requests==='object'&&!Array.isArray(data.billing_requests)&&
     Object.keys(data.billing_requests).length<=10_000&&data.organizations&&typeof data.organizations==='object'&&!Array.isArray(data.organizations)&&
     Object.keys(data.organizations).length<=10_000&&data.memberships&&typeof data.memberships==='object'&&!Array.isArray(data.memberships)&&
@@ -98,7 +108,7 @@ function validate(input) {
     Object.keys(data.node_enrollments).length<=50_000&&data.nodes&&typeof data.nodes==='object'&&!Array.isArray(data.nodes)&&Object.keys(data.nodes).length<=50_000&&
     data.orchestration_profiles&&typeof data.orchestration_profiles==='object'&&!Array.isArray(data.orchestration_profiles)&&Object.keys(data.orchestration_profiles).length<=10_000&&
     objectCollection(data.dispatch_epochs,10_000)&&objectCollection(data.dispatch_tasks,50_000)&&objectCollection(data.dispatch_approvals,50_000)&&
-    objectCollection(data.dispatch_attempts,50_000)&&objectCollection(data.dispatch_idempotency,50_000),
+    objectCollection(data.dispatch_attempts,50_000)&&objectCollection(data.dispatch_recoveries,50_000)&&objectCollection(data.dispatch_idempotency,50_000),
     'INVALID_ACCESS_STORE');
   check(Array.isArray(data.processed_webhook_ids)&&data.processed_webhook_ids.length<=1000&&
     data.processed_webhook_ids.every(id=>safeText(id,256))&&new Set(data.processed_webhook_ids).size===data.processed_webhook_ids.length,
@@ -160,7 +170,7 @@ function validate(input) {
   for(const [id,epoch] of Object.entries(data.dispatch_epochs))check(data.organizations[id]&&Number.isSafeInteger(epoch)&&epoch>=1,'INVALID_ACCESS_STORE');
   for(const [id,task] of Object.entries(data.dispatch_tasks)){check(task&&Object.keys(task).length===16&&id===dispatchTaskKey(task.organization_id,task.task_id)&&
     data.organizations[task.organization_id]&&dispatchTaskDigest(task)===task.task_digest&&task.dispatch_epoch<=data.dispatch_epochs[task.organization_id]&&
-    ['AWAITING_APPROVAL','QUEUED','ACTIVE','SUCCEEDED','FAILED','RECOVERY_REQUIRED'].includes(task.status)&&Array.isArray(task.dispatches)&&
+      ['AWAITING_APPROVAL','AWAITING_RECOVERY_APPROVAL','QUEUED','ACTIVE','SUCCEEDED','FAILED','RECOVERY_REQUIRED'].includes(task.status)&&Array.isArray(task.dispatches)&&
     task.dispatches.length>=2&&task.dispatches.length<=5,'INVALID_ACCESS_STORE');
     for(const [index,item] of task.dispatches.entries())check(item&&Object.keys(item).length===12&&item.dispatch_id===`${task.task_id}:${item.role}`&&item.index===index&&
       ['head','planner','coder','reviewer','validator'].includes(item.role)&&data.models[item.model_id]?.organization_id===task.organization_id&&
@@ -168,26 +178,40 @@ function validate(input) {
       (index===0?item.predecessor_dispatch_id===null:item.predecessor_dispatch_id===task.dispatches[index-1].dispatch_id)&&
       (item.predecessor_result_digest===null||validHash(item.predecessor_result_digest))&&
       (item.predecessor_evidence_digest===null||validHash(item.predecessor_evidence_digest))&&
-      ['WAITING_APPROVAL','WAITING_DEPENDENCY','QUEUED','CLAIMED','RUNNING','SUCCEEDED','FAILED','RECOVERY_REQUIRED','BLOCKED'].includes(item.status)&&
+      ['WAITING_APPROVAL','WAITING_RECOVERY_APPROVAL','WAITING_DEPENDENCY','QUEUED','CLAIMED','RUNNING','SUCCEEDED','FAILED','RECOVERY_REQUIRED','BLOCKED'].includes(item.status)&&
       (item.attempt_id===null||safeKey(item.attempt_id))&&nullableText(item.recovery_reason,256),'INVALID_ACCESS_STORE')}
   for(const [id,approval] of Object.entries(data.dispatch_approvals)){const task=data.dispatch_tasks[dispatchTaskKey(approval?.organization_id,approval?.task_id)];
-    check(approval&&Object.keys(approval).length===15&&id===dispatchApprovalKey(approval.organization_id,approval.approval_id)&&task&&
-      approval.task_digest===task.task_digest&&approval.role_graph_digest===task.role_graph_digest&&approval.assignment_digest===task.assignment_digest&&
-      approval.profile_revision===task.profile_revision&&approval.dispatch_epoch===task.dispatch_epoch&&validId(approval.approved_by)&&
+    const immutableApproval=Object.fromEntries(Object.entries(approval??{}).filter(([key,value])=>
+      !['consumed_at','activation_receipt','approval_digest'].includes(key)&&!(key==='recovery_digest'&&value===null)));
+    check(approval&&Object.keys(approval).length===16&&id===dispatchApprovalKey(approval.organization_id,approval.approval_id)&&task&&
+      validHash(approval.task_digest)&&approval.role_graph_digest===task.role_graph_digest&&approval.assignment_digest===task.assignment_digest&&
+      approval.profile_revision===task.profile_revision&&approval.dispatch_epoch<=task.dispatch_epoch&&validId(approval.approved_by)&&
       Number.isSafeInteger(approval.issued_at)&&Number.isSafeInteger(approval.expires_at)&&approval.expires_at>approval.issued_at&&
+      (approval.recovery_digest===null||validHash(approval.recovery_digest))&&
       (approval.consumed_at===null||Number.isSafeInteger(approval.consumed_at))&&(approval.activation_receipt===null||validHash(approval.activation_receipt))&&
-      ((approval.consumed_at===null)===(approval.activation_receipt===null))&&validHash(approval.approval_digest),
+      ((approval.consumed_at===null)===(approval.activation_receipt===null))&&approval.approval_digest===canonicalDigest(immutableApproval),
     'INVALID_ACCESS_STORE')}
   for(const [id,attempt] of Object.entries(data.dispatch_attempts)){const task=data.dispatch_tasks[dispatchTaskKey(attempt?.organization_id,attempt?.task_id)],
     item=task?.dispatches.find(value=>value.dispatch_id===attempt?.dispatch_id),approval=data.dispatch_approvals[dispatchApprovalKey(attempt?.organization_id,attempt?.approval_id)];
     check(attempt&&Object.keys(attempt).length===22&&id===attempt.attempt_id&&validAttemptId(id)&&task&&item&&item.role===attempt.role&&
       item.node_id===attempt.node_id&&approval&&attempt.approval_digest===approval.approval_digest&&attempt.activation_receipt===approval.activation_receipt&&
-      attempt.dispatch_epoch===task.dispatch_epoch&&['CLAIMED','RUNNING','SUCCEEDED','FAILED','RECOVERY_REQUIRED'].includes(attempt.status)&&
+      attempt.dispatch_epoch<=task.dispatch_epoch&&attempt.dispatch_epoch===approval.dispatch_epoch&&['CLAIMED','RUNNING','SUCCEEDED','FAILED','RECOVERY_REQUIRED'].includes(attempt.status)&&
       Number.isSafeInteger(attempt.event_sequence)&&attempt.event_sequence>=0&&Number.isSafeInteger(attempt.lease_started_at)&&
       Number.isSafeInteger(attempt.lease_expires_at)&&attempt.lease_expires_at>attempt.lease_started_at&&
       (attempt.observed_started_at===null||validTime(attempt.observed_started_at))&&(attempt.observed_finished_at===null||validTime(attempt.observed_finished_at))&&
       (attempt.result_digest===null||validHash(attempt.result_digest))&&(attempt.evidence_digest===null||validHash(attempt.evidence_digest))&&
-      nullableText(attempt.recovery_reason,256)&&validTime(attempt.created_at)&&validTime(attempt.updated_at)&&item.attempt_id===attempt.attempt_id,
+      nullableText(attempt.recovery_reason,256)&&validTime(attempt.created_at)&&validTime(attempt.updated_at),
+    'INVALID_ACCESS_STORE')}
+  for(const [id,recovery] of Object.entries(data.dispatch_recoveries)){const task=data.dispatch_tasks[dispatchTaskKey(recovery?.organization_id,recovery?.task_id)],
+    attempt=data.dispatch_attempts[recovery?.attempt_id];check(recovery&&Object.keys(recovery).length===19&&
+      id===dispatchRecoveryKey(recovery.organization_id,recovery.recovery_id)&&task&&attempt&&attempt.organization_id===recovery.organization_id&&
+      attempt.task_id===recovery.task_id&&attempt.dispatch_id===recovery.dispatch_id&&attempt.role===recovery.role&&
+      recovery.role_graph_digest===task.role_graph_digest&&recovery.assignment_digest===task.assignment_digest&&recovery.profile_revision===task.profile_revision&&
+      recovery.previous_dispatch_epoch===attempt.dispatch_epoch&&recovery.target_dispatch_epoch>recovery.previous_dispatch_epoch&&
+      recovery.target_dispatch_epoch<=data.dispatch_epochs[recovery.organization_id]&&
+      [recovery.previous_dispatch_epoch,recovery.target_dispatch_epoch].includes(task.dispatch_epoch)&&safeText(recovery.recovery_reason,256)&&
+      recovery.disposition==='RETRY_CONFIRMED_TERMINATED'&&
+      validHash(recovery.evidence_digest)&&validId(recovery.verified_by)&&validTime(recovery.verified_at)&&recovery.recovery_digest===dispatchRecoveryDigest(recovery),
     'INVALID_ACCESS_STORE')}
   for(const [id,entry] of Object.entries(data.dispatch_idempotency))check(validHash(id)&&entry&&Object.keys(entry).length===4&&safeText(entry.scope,160)&&
     safeKey(entry.key)&&validHash(entry.request_digest)&&entry.response&&typeof entry.response==='object'&&!Array.isArray(entry.response)&&
@@ -206,7 +230,7 @@ export function createAccessStore(root) {
   const raw=()=>{check(lstatSync(file).size<=8*1024*1024,'ACCESS_STORE_TOO_LARGE');return JSON.parse(readFileSync(file,'utf8'))};
   const save=data=>{data=validate(data);const temporary=join(root,`.access-${randomUUID()}.tmp`);
     writeFileSync(temporary,JSON.stringify(data,null,2)+'\n',{encoding:'utf8',mode:0o600,flag:'wx'});renameSync(temporary,file)};
-  if(raw().schema_version!==8)save(migrate(raw()));
+  if(raw().schema_version!==9)save(migrate(raw()));
   const load=()=>validate(raw());let queue=Promise.resolve();
   const update=operation=>{const result=queue.then(()=>{const data=load(),value=operation(data);save(data);return value});queue=result.catch(()=>{});return result};
   const roleEvent=(kind,input)=>update(data=>{const {node_id,dispatch_id,attempt_id,expected_epoch,event_sequence,idempotency_key,now}=input,
@@ -259,7 +283,8 @@ export function createAccessStore(root) {
     dispatchTasks(organizationId,now=Date.now()){return update(data=>{check(validOrganizationId(organizationId)&&data.organizations[organizationId],'UNKNOWN_ORGANIZATION');
       reconcileData(data,organizationId,now);return Object.values(data.dispatch_tasks).filter(task=>task.organization_id===organizationId)
         .sort((left,right)=>left.created_at.localeCompare(right.created_at)||left.task_id.localeCompare(right.task_id)).map(task=>{
-          const approval=approvalForTask(data,task);return {...dispatchPublicTask(task,attemptsForTask(data,task)),approval_consumed:Boolean(approval?.consumed_at)}})})},
+          const approval=approvalForTask(data,task);return {...dispatchPublicTask(task,attemptsForTask(data,task)),recoveries:structuredClone(recoveriesForTask(data,task)),
+            approval_consumed:Boolean(approval?.consumed_at)}})})},
     createDispatchTask({organization_id,task_id,objective,profile_revision,roles,assignment,created_by,idempotency_key,now=Date.now()}){return update(data=>{
       check(validOrganizationId(organization_id)&&data.organizations[organization_id]&&safeKey(idempotency_key),'INVALID_DISPATCH_TASK');
       const request_digest=canonicalDigest({organization_id,task_id,objective,profile_revision,roles,assignment,created_by}),scope=`${organization_id}:create`,key=idempotencyId(scope,idempotency_key),prior=data.dispatch_idempotency[key];
@@ -279,6 +304,41 @@ export function createAccessStore(root) {
       check(!data.dispatch_approvals[approvalKey],'DISPATCH_APPROVAL_ALREADY_EXISTS');data.dispatch_approvals[approvalKey]=approval;
       task.status='QUEUED';task.dispatches[0].status='QUEUED';task.updated_at=new Date(now).toISOString();
       const response={task:dispatchPublicTask(task),approval:structuredClone(approval)};data.dispatch_idempotency[key]={scope,key:idempotency_key,request_digest,response:structuredClone(response)};return response})},
+    assessDispatchRecovery({organization_id,task_id,attempt_id,expected_task_digest,recovery_id,disposition,evidence_digest,verified_by,idempotency_key,now=Date.now()}){
+      return update(data=>{check(validOrganizationId(organization_id)&&data.organizations[organization_id]&&safeKey(idempotency_key),'INVALID_DISPATCH_RECOVERY');
+        reconcileData(data,organization_id,now);const request_digest=canonicalDigest({organization_id,task_id,attempt_id,expected_task_digest,recovery_id,
+          disposition,evidence_digest,verified_by}),scope=`${organization_id}:recover-assess`,key=idempotencyId(scope,idempotency_key),prior=data.dispatch_idempotency[key];
+        if(prior){check(prior.scope===scope&&prior.key===idempotency_key&&prior.request_digest===request_digest,'IDEMPOTENCY_CONFLICT');return structuredClone(prior.response)}
+        const task=data.dispatch_tasks[dispatchTaskKey(organization_id,task_id)],attempt=data.dispatch_attempts[attempt_id];check(task,'DISPATCH_TASK_NOT_FOUND');
+        check(task.task_digest===expected_task_digest,'TASK_DIGEST_MISMATCH');check(data.orchestration_profiles[organization_id]?.revision===task.profile_revision,
+          'ORCHESTRATION_PROFILE_CHANGED');
+        check(!Object.values(data.dispatch_recoveries).some(value=>value.organization_id===organization_id&&value.task_id===task_id&&
+          value.attempt_id===attempt_id),'DISPATCH_ATTEMPT_ALREADY_ASSESSED');
+        const recovery=dispatchRecoveryAssessment({recovery_id,task,attempt,disposition,evidence_digest,verified_by,
+          target_dispatch_epoch:data.dispatch_epochs[organization_id],now}),recoveryKey=dispatchRecoveryKey(organization_id,recovery_id);
+        check(!data.dispatch_recoveries[recoveryKey],'DISPATCH_RECOVERY_ALREADY_EXISTS');data.dispatch_recoveries[recoveryKey]=recovery;
+        const response={task:dispatchPublicTask(task,attemptsForTask(data,task)),recovery:structuredClone(recovery)};
+        data.dispatch_idempotency[key]={scope,key:idempotency_key,request_digest,response:structuredClone(response)};return response})},
+    approveDispatchRecovery({organization_id,task_id,recovery_id,expected_recovery_digest,approval_id,approved_by,ttl_ms,idempotency_key,now=Date.now()}){
+      return update(data=>{check(validOrganizationId(organization_id)&&data.organizations[organization_id]&&safeKey(idempotency_key),
+          'INVALID_DISPATCH_RECOVERY_APPROVAL');
+        const request_digest=canonicalDigest({organization_id,task_id,recovery_id,expected_recovery_digest,approval_id,approved_by,ttl_ms}),
+          scope=`${organization_id}:recover-approve`,key=idempotencyId(scope,idempotency_key),prior=data.dispatch_idempotency[key];
+        if(prior){check(prior.scope===scope&&prior.key===idempotency_key&&prior.request_digest===request_digest,'IDEMPOTENCY_CONFLICT');return structuredClone(prior.response)}
+        const taskKey=dispatchTaskKey(organization_id,task_id),task=data.dispatch_tasks[taskKey],recovery=data.dispatch_recoveries[dispatchRecoveryKey(organization_id,recovery_id)];
+        check(task,'DISPATCH_TASK_NOT_FOUND');check(recovery&&recovery.task_id===task_id,'DISPATCH_RECOVERY_NOT_FOUND');
+        check(recovery.recovery_digest===expected_recovery_digest,'RECOVERY_DIGEST_MISMATCH');check(['RECOVERY_REQUIRED','AWAITING_RECOVERY_APPROVAL'].includes(task.status),
+          'DISPATCH_RECOVERY_NOT_APPROVABLE');check(data.dispatch_epochs[organization_id]===recovery.target_dispatch_epoch,'DISPATCH_EPOCH_CHANGED');
+        check(data.orchestration_profiles[organization_id]?.revision===task.profile_revision,'ORCHESTRATION_PROFILE_CHANGED');
+        const resumed=task.status==='RECOVERY_REQUIRED'?prepareRecoveredDispatchTask({task,recovery,now}):structuredClone(task),
+          pending=resumed.dispatches.find(item=>item.dispatch_id===recovery.dispatch_id);
+        check(resumed.dispatch_epoch===recovery.target_dispatch_epoch&&pending?.status==='WAITING_RECOVERY_APPROVAL'&&pending.attempt_id===null,
+          'DISPATCH_RECOVERY_NOT_APPROVABLE');
+        const approval=dispatchRecoveryApproval({approval_id,task:resumed,recovery,approved_by,ttl_ms,now}),
+          approvalKey=dispatchApprovalKey(organization_id,approval_id);check(!data.dispatch_approvals[approvalKey],'DISPATCH_APPROVAL_ALREADY_EXISTS');
+        data.dispatch_approvals[approvalKey]=approval;resumed.status='QUEUED';pending.status='QUEUED';resumed.updated_at=new Date(now).toISOString();data.dispatch_tasks[taskKey]=resumed;
+        const response={task:dispatchPublicTask(resumed,attemptsForTask(data,resumed)),approval:structuredClone(approval),
+          recovery:structuredClone(recovery)};data.dispatch_idempotency[key]={scope,key:idempotency_key,request_digest,response:structuredClone(response)};return response})},
     claimDispatch({node_id,idempotency_key,now=Date.now()}){return update(data=>{const node=data.nodes[node_id];check(node&&safeKey(idempotency_key)&&
       Number.isSafeInteger(now)&&now>=0,'INVALID_DISPATCH_CLAIM');reconcileData(data,node.organization_id,now);check(onlineAt(node,now),'NODE_UNAVAILABLE');
       const request_digest=canonicalDigest({node_id}),scope=`${node_id}:claim`,id=idempotencyId(scope,idempotency_key),prior=data.dispatch_idempotency[id];
@@ -289,8 +349,8 @@ export function createAccessStore(root) {
         .sort((left,right)=>left.task.created_at.localeCompare(right.task.created_at)||left.item.index-right.item.index);
       check(candidates.length>0,'NO_ELIGIBLE_DISPATCH');const {task,item}=candidates[0];check(task.dispatch_epoch===data.dispatch_epochs[node.organization_id],
         'DISPATCH_EPOCH_CHANGED');check(data.orchestration_profiles[node.organization_id]?.revision===task.profile_revision,'ORCHESTRATION_PROFILE_CHANGED');
-      let approval=approvalForTask(data,task,{consumed:item.role!=='head'});check(approval,'DISPATCH_APPROVAL_NOT_FOUND');
-      if(item.role==='head'){check(approval.expires_at>now,'DISPATCH_APPROVAL_EXPIRED');approval.consumed_at=now;approval.activation_receipt=canonicalDigest({
+      let approval=approvalForTask(data,task);check(approval,'DISPATCH_APPROVAL_NOT_FOUND');
+      if(approval.consumed_at===null){check(approval.expires_at>now,'DISPATCH_APPROVAL_EXPIRED');approval.consumed_at=now;approval.activation_receipt=canonicalDigest({
         approval_digest:approval.approval_digest,consumed_at:now,node_id,dispatch_id:item.dispatch_id,dispatch_epoch:task.dispatch_epoch});task.status='ACTIVE'}
       check(approval.activation_receipt,'DISPATCH_APPROVAL_NOT_CONSUMED');const attempt_id=`attempt-${randomUUID()}`,timestamp=new Date(now).toISOString();
       const attempt={schema_version:1,attempt_id,organization_id:task.organization_id,task_id:task.task_id,dispatch_id:item.dispatch_id,role:item.role,node_id,

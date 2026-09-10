@@ -76,7 +76,7 @@ Studio의 Step 06에서 작업을 만들면 상태는 `AWAITING_APPROVAL`이며 
 npm run agent -- claim /absolute/private-agent-state claim-unique-key
 ```
 
-각 역할의 120초 lease 또는 heartbeat가 불확실해지면 자동으로 다시 배정하지 않습니다. Studio에는 `RECOVERY_REQUIRED`와 차단된 후속 역할이 표시되며 복구 버튼은 제공하지 않습니다. 이 API는 전달 원장일 뿐 모델·명령을 실행하지 않습니다.
+각 역할의 120초 lease 또는 heartbeat가 불확실해지면 자동으로 다시 배정하지 않습니다. Studio는 `RECOVERY_REQUIRED`에서 종료 확인 자료의 SHA-256 digest를 먼저 기록하고, 별도 복구 승인을 받은 뒤에만 같은 역할을 새 epoch에서 다시 엽니다. 두 동작은 owner/admin에게만 제공되며 후속 역할은 계속 차단됩니다. 이 API는 전달 원장일 뿐 모델·명령을 실행하지 않습니다.
 
 ## 접근 규칙
 

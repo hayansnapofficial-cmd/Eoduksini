@@ -50,6 +50,20 @@ test('tenant task routes separate create, approval, claim and ordered Agent evid
     assert.equal((await fetch(url+`/api/agent/dispatches/${encodeURIComponent(claim.envelope.dispatch_id)}/finished`,{
       method:'POST',headers:agentHeaders,body:JSON.stringify(finished)})).status,200);
     const tasks=await fetch(url+'/api/organization/tasks',{headers:{'X-Test-Role':'owner'}}).then(value=>value.json());
-    assert.equal(tasks.tasks[0].dispatches[1].status,'QUEUED');assert.equal(tasks.tasks[0].dispatches[1].predecessor_result_digest,H1)
+    assert.equal(tasks.tasks[0].dispatches[1].status,'QUEUED');assert.equal(tasks.tasks[0].dispatches[1].predecessor_result_digest,H1);
+    const plannerClaim=await fetch(url+'/api/agent/tasks/claim',{method:'POST',headers:agentHeaders,body:JSON.stringify({idempotency_key:'claim-2'})})
+      .then(value=>value.json());await store.reconcileDispatches({organization_id:organization.organization_id,now:plannerClaim.attempt.lease_expires_at});
+    const [fenced]=await store.dispatchTasks(organization.organization_id,plannerClaim.attempt.lease_expires_at),assessmentPayload={
+      attempt_id:plannerClaim.attempt.attempt_id,expected_task_digest:fenced.task_digest,recovery_id:'RECOVERY-API-1',
+      disposition:'RETRY_CONFIRMED_TERMINATED',evidence_digest:H2,idempotency_key:'recover-assess-1'};
+    assert.equal((await post('/api/organization/tasks/CUSTOMER-TASK-1/recovery-assessments',assessmentPayload,{'X-Test-Role':'member'})).status,403);
+    assert.equal((await post('/api/organization/tasks/CUSTOMER-TASK-1/recovery-assessments',{...assessmentPayload,organization_id:'org-99'})).status,400);
+    const assessmentResponse=await post('/api/organization/tasks/CUSTOMER-TASK-1/recovery-assessments',assessmentPayload);
+    assert.equal(assessmentResponse.status,201);const assessment=await assessmentResponse.json();assert.equal(assessment.recovery.verified_by,'42');
+    const recoveryApprovalResponse=await post('/api/organization/tasks/CUSTOMER-TASK-1/recovery-approvals',{recovery_id:'RECOVERY-API-1',
+      expected_recovery_digest:assessment.recovery.recovery_digest,approval_id:'RECOVERY-APPROVAL-API-1',ttl_ms:60_000,idempotency_key:'recover-approve-1'});
+    assert.equal(recoveryApprovalResponse.status,200);const recoveryApproval=await recoveryApprovalResponse.json();
+    assert.equal(recoveryApproval.approval.approved_by,'42');assert.equal(recoveryApproval.task.dispatches[0].status,'SUCCEEDED');
+    assert.equal(recoveryApproval.task.dispatches[1].status,'QUEUED')
   }finally{await new Promise(resolveClose=>server.close(resolveClose));rmSync(parent,{recursive:true,force:true})}
 });

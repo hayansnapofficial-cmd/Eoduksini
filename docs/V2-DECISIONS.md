@@ -70,3 +70,9 @@ Understood as: persist and transport one tenant-scoped sequential role graph in 
 Every role has one assigned-node attempt and a 120-second server-clock lease. Lease expiry or heartbeat uncertainty fences the task, blocks downstream roles, increments the organization epoch once, and requires explicit later recovery design; time alone never authorizes retry or reassignment. Reconciliation is authoritative but lazy on store operations.
 
 This slice advances the access store to v8 and remains a single-process development implementation. It adds no model invocation, command execution, repository write, Git publication, database mutation, deployment, automatic retry, distributed consensus, or production high availability. Those absences remain explicit boundaries rather than implied dispatch capabilities.
+
+## Evidence-based Tenant Dispatch manual recovery — 2026-09-10
+
+Understood as: preserve the prior uncertainty fence, then permit only `RETRY_CONFIRMED_TERMINATED` after an owner/admin records a SHA-256 digest of independently inspected termination evidence for the exact failed attempt. Assessment and approval are separate idempotent transitions. The approval binds the immutable recovery digest and opens the same role only at the already-fenced organization epoch; its first claim consumes a new activation receipt. Expiry returns to explicit recovery reapproval and never authorizes a claim.
+
+This slice advances the access store to v9 and preserves historical v8 approval digests. It does not infer prior success, store raw evidence, skip roles, reassign nodes, force unlocks, verify an operating-system process itself, or add multi-instance consensus.
