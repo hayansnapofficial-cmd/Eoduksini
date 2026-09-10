@@ -1,4 +1,5 @@
 import { canonical, digest } from '../core/contracts.mjs';
+import { executionBindingContract } from './model-execution.mjs';
 
 export const DISPATCH_ROLES=Object.freeze(['head','planner','coder','reviewer','validator']);
 const REQUEST_ROLES=DISPATCH_ROLES.slice(1),HASH=/^[0-9a-f]{64}$/;
@@ -6,6 +7,10 @@ const AUTHORITY_KEYS=['model_execution','remote_worker_execution','repository_wr
 const check=(condition,reason)=>{if(!condition)throw new Error(reason)};
 const safeText=(value,max=256)=>typeof value==='string'&&value.length>0&&value.length<=max&&value.isWellFormed()&&!/[\u0000-\u001f\u007f]/.test(value)&&value.trim()===value;
 const exact=(value,keys,reason)=>check(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key)),reason);
+const normalizeExecutionBindings=(values,task,reason)=>{check(task&&Array.isArray(task.dispatches)&&Array.isArray(values)&&[0,task.dispatches.length].includes(values.length),reason);
+  let normalized;try{normalized=values.map(executionBindingContract)}catch{throw new Error(reason)}const ids=new Set(normalized.map(value=>value.dispatch_id));
+  check(ids.size===normalized.length&&normalized.every(value=>{const item=task.dispatches.find(candidate=>candidate.dispatch_id===value.dispatch_id);
+    return item&&item.role===value.role&&item.node_id===value.node_id&&item.model_id===value.model_id&&item.provider_id===value.provider_id}),reason);return normalized};
 
 function inspect(value) {
   const seen=new Set();
@@ -32,7 +37,8 @@ const immutableTask=value=>({schema_version:value.schema_version,organization_id
 
 export const dispatchTaskDigest=task=>digest(immutableTask(inspect(task)));
 const approvalDigestInput=approval=>Object.fromEntries(Object.entries(approval).filter(([key,value])=>
-  !['consumed_at','activation_receipt'].includes(key)&&!(key==='recovery_digest'&&value===null)));
+  !['consumed_at','activation_receipt'].includes(key)&&!(key==='recovery_digest'&&value===null)&&
+  !(key==='model_execution'&&value===false)&&!(key==='execution_bindings'&&Array.isArray(value)&&value.length===0)));
 
 export function createDispatchTask(input) {
   const value=inspect(input);exact(value,['organization_id','task_id','objective','profile_revision','roles','assignment','dispatch_epoch','created_by','now'],'INVALID_DISPATCH_TASK');
@@ -60,14 +66,17 @@ export function createDispatchTask(input) {
 }
 
 export function dispatchApproval(input) {
-  const value=inspect(input);exact(value,['approval_id','task','approved_by','ttl_ms','now'],'INVALID_DISPATCH_APPROVAL');
+  const value=inspect(input),keys=['approval_id','task','approved_by','ttl_ms','now'];
+  check(value&&Object.keys(value).length===keys.length+(Object.hasOwn(value,'execution_bindings')?1:0)&&keys.every(key=>Object.hasOwn(value,key)),
+    'INVALID_DISPATCH_APPROVAL');const execution_bindings=normalizeExecutionBindings(value.execution_bindings??[],value.task,'INVALID_DISPATCH_APPROVAL');
   check(safeText(value.approval_id,128)&&/^[1-9][0-9]{0,31}$/.test(value.approved_by)&&Number.isSafeInteger(value.ttl_ms)&&
     value.ttl_ms>=1000&&value.ttl_ms<=3_600_000&&Number.isSafeInteger(value.now)&&value.now>=0&&value.task?.task_digest===dispatchTaskDigest(value.task),
   'INVALID_DISPATCH_APPROVAL');
   const approval={schema_version:1,approval_id:value.approval_id,organization_id:value.task.organization_id,task_id:value.task.task_id,
     task_digest:value.task.task_digest,role_graph_digest:value.task.role_graph_digest,assignment_digest:value.task.assignment_digest,
     profile_revision:value.task.profile_revision,dispatch_epoch:value.task.dispatch_epoch,approved_by:value.approved_by,issued_at:value.now,
-    expires_at:value.now+value.ttl_ms,recovery_digest:null,consumed_at:null,activation_receipt:null};
+    expires_at:value.now+value.ttl_ms,recovery_digest:null,model_execution:execution_bindings.length>0,execution_bindings,
+    consumed_at:null,activation_receipt:null};
   return {...approval,approval_digest:digest(approvalDigestInput(approval))};
 }
 
@@ -114,7 +123,10 @@ export function prepareRecoveredDispatchTask(input) {
 }
 
 export function dispatchRecoveryApproval(input) {
-  const value=inspect(input);exact(value,['approval_id','task','recovery','approved_by','ttl_ms','now'],'INVALID_DISPATCH_RECOVERY_APPROVAL');
+  const value=inspect(input),keys=['approval_id','task','recovery','approved_by','ttl_ms','now'];
+  check(value&&Object.keys(value).length===keys.length+(Object.hasOwn(value,'execution_bindings')?1:0)&&keys.every(key=>Object.hasOwn(value,key)),
+    'INVALID_DISPATCH_RECOVERY_APPROVAL');const execution_bindings=normalizeExecutionBindings(value.execution_bindings??[],value.task,
+      'INVALID_DISPATCH_RECOVERY_APPROVAL');
   check(safeText(value.approval_id,128)&&/^[1-9][0-9]{0,31}$/.test(value.approved_by)&&Number.isSafeInteger(value.ttl_ms)&&
     value.ttl_ms>=1000&&value.ttl_ms<=3_600_000&&Number.isSafeInteger(value.now)&&value.now>=0&&
     value.task?.task_digest===dispatchTaskDigest(value.task)&&value.task.status==='AWAITING_RECOVERY_APPROVAL'&&
@@ -124,13 +136,15 @@ export function dispatchRecoveryApproval(input) {
   const approval={schema_version:1,approval_id:value.approval_id,organization_id:value.task.organization_id,task_id:value.task.task_id,
     task_digest:value.task.task_digest,role_graph_digest:value.task.role_graph_digest,assignment_digest:value.task.assignment_digest,
     profile_revision:value.task.profile_revision,dispatch_epoch:value.task.dispatch_epoch,approved_by:value.approved_by,issued_at:value.now,
-    expires_at:value.now+value.ttl_ms,recovery_digest:value.recovery.recovery_digest,consumed_at:null,activation_receipt:null};
+    expires_at:value.now+value.ttl_ms,recovery_digest:value.recovery.recovery_digest,model_execution:execution_bindings.length>0,
+    execution_bindings,consumed_at:null,activation_receipt:null};
   return {...approval,approval_digest:digest(approvalDigestInput(approval))};
 }
 
 export function dispatchPublicTask(task,attempts=[]) {
   const value=inspect(task),publicAttempts=inspect(attempts).map(item=>({attempt_id:item.attempt_id,dispatch_id:item.dispatch_id,role:item.role,
     node_id:item.node_id,status:item.status,event_sequence:item.event_sequence,lease_started_at:item.lease_started_at,lease_expires_at:item.lease_expires_at,
-    result_digest:item.result_digest??null,evidence_digest:item.evidence_digest??null,recovery_reason:item.recovery_reason??null}));
+    result_digest:item.result_digest??null,evidence_digest:item.evidence_digest??null,recovery_reason:item.recovery_reason??null,
+    execution_receipt:item.execution_receipt??null}));
   return {...structuredClone(value),attempts:publicAttempts};
 }

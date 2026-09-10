@@ -121,7 +121,7 @@ test('Access store migrates legacy Stripe-shaped records to provider-neutral bil
   writeFileSync(join(root,'access.json'),JSON.stringify(legacy));
   try {const store=createAccessStore(root),user=store.user('42');assert.equal(user.billing_provider,null);
     assert.equal(user.billing_subscription_id,null);assert.equal(user.plan_id,null);assert.equal(store.organizationsForUser('42')[0].organization_id,'org-42');
-    const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,9);
+    const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,10);
     assert.deepEqual(migrated.provider_connections,{});assert.deepEqual(migrated.models,{});assert.deepEqual(migrated.nodes,{});
   } finally {rmSync(parent,{recursive:true,force:true})}
 });
@@ -142,7 +142,7 @@ test('Access store upgrades the live v4 shape without changing organization reco
   const parent=mkdtempSync(join(tmpdir(),'eoduksini-access-v4-')),root=join(parent,'access');mkdirSync(root);
   const v4={schema_version:4,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{}};
   writeFileSync(join(root,'access.json'),JSON.stringify(v4));
-  try {createAccessStore(root);const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,9);
+  try {createAccessStore(root);const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,10);
     assert.deepEqual(migrated.provider_connections,{});assert.deepEqual(migrated.models,{});assert.deepEqual(migrated.node_enrollments,{});assert.deepEqual(migrated.nodes,{})}
   finally {rmSync(parent,{recursive:true,force:true})}
 });
@@ -151,7 +151,7 @@ test('Access store upgrades the deployed v5 shape with empty node collections',(
   const parent=mkdtempSync(join(tmpdir(),'eoduksini-access-v5-')),root=join(parent,'access');mkdirSync(root);
   const v5={schema_version:5,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{},provider_connections:{},models:{}};
   writeFileSync(join(root,'access.json'),JSON.stringify(v5));
-  try {createAccessStore(root);const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,9);
+  try {createAccessStore(root);const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));assert.equal(migrated.schema_version,10);
     assert.deepEqual(migrated.node_enrollments,{});assert.deepEqual(migrated.nodes,{});assert.deepEqual(migrated.orchestration_profiles,{})}
   finally {rmSync(parent,{recursive:true,force:true})}
 });
@@ -160,7 +160,7 @@ test('Access store upgrades the deployed v6 shape with empty orchestration profi
   const parent=mkdtempSync(join(tmpdir(),'eoduksini-access-v6-')),root=join(parent,'access');mkdirSync(root);
   const v6={schema_version:6,users:{},organizations:{},memberships:{},processed_webhook_ids:[],billing_requests:{},provider_connections:{},models:{},node_enrollments:{},nodes:{}};
   writeFileSync(join(root,'access.json'),JSON.stringify(v6));try{createAccessStore(root);const migrated=JSON.parse(readFileSync(join(root,'access.json'),'utf8'));
-    assert.equal(migrated.schema_version,9);assert.deepEqual(migrated.orchestration_profiles,{});assert.deepEqual(migrated.dispatch_tasks,{});
+    assert.equal(migrated.schema_version,10);assert.deepEqual(migrated.orchestration_profiles,{});assert.deepEqual(migrated.dispatch_tasks,{});
     assert.deepEqual(migrated.dispatch_recoveries,{})}finally{rmSync(parent,{recursive:true,force:true})}
 });
 

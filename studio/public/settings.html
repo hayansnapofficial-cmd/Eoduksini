@@ -38,7 +38,7 @@
       <div id="assignment-results" class="assignment-results"></div><div id="assignment-limits" class="assignment-limits"></div></div>
   </section>
   <section class="registry-panel dispatch-panel"><div class="panel-title"><div><p class="eyebrow">STEP 06</p><h2>Tenant Task Dispatch</h2></div><span id="dispatch-count">0</span></div>
-    <div class="dispatch-boundary"><strong>작업 생성과 승인은 분리됩니다.</strong><p>이 단계는 작업 전달 기록이며 모델·명령을 실행하지 않습니다.</p></div>
+    <div class="dispatch-boundary"><strong>작업 생성과 모델 실행 승인은 분리됩니다.</strong><p>승인은 고객 Agent의 정확한 Provider 설정 digest와 모델·노드·epoch에 결속되며 저장소·Git·DB·배포 권한은 포함하지 않습니다.</p></div>
     <form id="dispatch-form"><div class="dispatch-inputs"><label>Task ID<input id="dispatch-task-id" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}" placeholder="예: CUSTOMER-TASK-002"></label>
       <fieldset><legend>순차 역할</legend><div class="role-grid dispatch-role-grid"><label><input type="checkbox" name="dispatch-role" value="planner" checked><span>planner</span></label><label><input type="checkbox" name="dispatch-role" value="coder" checked><span>coder</span></label><label><input type="checkbox" name="dispatch-role" value="reviewer" checked><span>reviewer</span></label><label><input type="checkbox" name="dispatch-role" value="validator" checked><span>validator</span></label></div></fieldset></div>
       <label>작업 목적<textarea id="dispatch-objective" required maxlength="2000" rows="4" placeholder="Agent에 전달할 경계가 분명한 작업 목적을 입력하세요."></textarea></label>

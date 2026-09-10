@@ -105,17 +105,25 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
       send(response,200,json({schema_version:1,node:publicNode(node)}))}
       catch(error){const unavailable=error?.message==='AGENT_SERVICE_UNAVAILABLE',unauthorized=error?.message==='INVALID_AGENT_CREDENTIAL';
         send(response,unavailable?503:unauthorized?401:400,failure(unavailable?'AGENT_SERVICE_UNAVAILABLE':unauthorized?'INVALID_AGENT_CREDENTIAL':'INVALID_NODE_CAPABILITIES'))}return}
+    const providerBindingRoute=pathname.match(/^\/api\/agent\/provider-connections\/([^/]+)\/ready$/);
+    if(providerBindingRoute && request.method==='POST') {try{if(!store)throw new Error('AGENT_SERVICE_UNAVAILABLE');const payload=await jsonBody(request,2048);
+      if(!exact(payload,['provider_id','config_digest','adapter_version','idempotency_key']))throw new Error('INVALID_PROVIDER_BINDING');
+      const node=store.authenticateNode(bearer(request));send(response,200,json({schema_version:1,...await store.bindProviderConnection({node_id:node.node_id,
+        connection_id:segment(providerBindingRoute[1]),...payload})}))}
+      catch(error){const code=error?.message??'INVALID_PROVIDER_BINDING',unavailable=code==='AGENT_SERVICE_UNAVAILABLE',unauthorized=code==='INVALID_AGENT_CREDENTIAL',
+        conflict=['PROVIDER_CONNECTION_BINDING_CONFLICT','IDEMPOTENCY_CONFLICT'].includes(code);send(response,unavailable?503:unauthorized?401:conflict?409:400,
+          failure(unavailable?'AGENT_SERVICE_UNAVAILABLE':unauthorized?'INVALID_AGENT_CREDENTIAL':code))}return}
     if(pathname==='/api/agent/tasks/claim' && request.method==='POST') {try{if(!store)throw new Error('AGENT_SERVICE_UNAVAILABLE');const payload=await jsonBody(request,1024);
       if(!exact(payload,['idempotency_key']))throw new Error('INVALID_DISPATCH_CLAIM');const node=store.authenticateNode(bearer(request));
       send(response,200,json(await store.claimDispatch({node_id:node.node_id,...payload})))}
       catch(error){const code=error?.message??'INVALID_DISPATCH_CLAIM',unavailable=code==='AGENT_SERVICE_UNAVAILABLE',unauthorized=code==='INVALID_AGENT_CREDENTIAL',
-        conflict=['NO_ELIGIBLE_DISPATCH','DISPATCH_EPOCH_CHANGED','ORCHESTRATION_PROFILE_CHANGED','IDEMPOTENCY_CONFLICT'].includes(code);
+        conflict=['NO_ELIGIBLE_DISPATCH','DISPATCH_EPOCH_CHANGED','ORCHESTRATION_PROFILE_CHANGED','EXECUTION_BINDING_CHANGED','IDEMPOTENCY_CONFLICT'].includes(code);
         send(response,unavailable?503:unauthorized?401:conflict?409:400,failure(unavailable?'AGENT_SERVICE_UNAVAILABLE':unauthorized?'INVALID_AGENT_CREDENTIAL':code))}return}
     const agentDispatch=pathname.match(/^\/api\/agent\/dispatches\/([^/]+)\/(started|progress|finished)$/);
     if(agentDispatch && request.method==='POST') {try{if(!store)throw new Error('AGENT_SERVICE_UNAVAILABLE');const action=agentDispatch[2],payload=await jsonBody(request,4096),
       keys={started:['attempt_id','expected_epoch','event_sequence','observed_started_at','idempotency_key'],progress:['attempt_id','expected_epoch','event_sequence','observed_at','idempotency_key'],
         finished:['attempt_id','expected_epoch','event_sequence','status','result_digest','evidence_digest','observed_finished_at','idempotency_key']}[action];
-      if(!exact(payload,keys))throw new Error('INVALID_DISPATCH_EVENT');const node=store.authenticateNode(bearer(request)),input={node_id:node.node_id,
+      if(!exact(payload,keys)&&!(action==='finished'&&exact(payload,[...keys,'execution_receipt'])))throw new Error('INVALID_DISPATCH_EVENT');const node=store.authenticateNode(bearer(request)),input={node_id:node.node_id,
         dispatch_id:segment(agentDispatch[1]),...payload},method={started:'startDispatch',progress:'progressDispatch',finished:'finishDispatch'}[action];
       send(response,200,json(await store[method](input)))}catch(error){const code=error?.message??'INVALID_DISPATCH_EVENT',unavailable=code==='AGENT_SERVICE_UNAVAILABLE',
         unauthorized=code==='INVALID_AGENT_CREDENTIAL',conflict=['DISPATCH_EPOCH_CHANGED','DISPATCH_EVENT_NOT_FOUND','DISPATCH_EVENT_SEQUENCE_MISMATCH',
@@ -172,12 +180,14 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
         'DISPATCH_TASK_ALREADY_EXISTS'].includes(code);send(response,conflict?409:400,failure(code))}return}
     const approvalRoute=pathname.match(/^\/api\/organization\/tasks\/([^/]+)\/approve$/);
     if(approvalRoute && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}
-      try{const payload=await jsonBody(request,4096);if(!exact(payload,['expected_task_digest','approval_id','ttl_ms','idempotency_key']))
+      try{const payload=await jsonBody(request,4096);if(!exact(payload,['expected_task_digest','approval_id','ttl_ms','idempotency_key'])&&
+          !exact(payload,['expected_task_digest','approval_id','ttl_ms','model_execution','idempotency_key']))
           throw new Error('INVALID_DISPATCH_APPROVAL');const organization_id=session.organization.organization_id;
         send(response,200,json({schema_version:1,...await store.approveDispatchTask({...payload,organization_id,task_id:segment(approvalRoute[1]),
-          approved_by:session.user.github_id})}))}
+          approved_by:session.user.github_id,model_execution:payload.model_execution??false})}))}
       catch(error){const code=error?.message??'INVALID_DISPATCH_APPROVAL',notFound=code==='DISPATCH_TASK_NOT_FOUND',conflict=['TASK_DIGEST_MISMATCH',
-        'DISPATCH_TASK_NOT_APPROVABLE','ORCHESTRATION_PROFILE_CHANGED','DISPATCH_EPOCH_CHANGED','DISPATCH_APPROVAL_ALREADY_EXISTS','IDEMPOTENCY_CONFLICT'].includes(code);
+        'DISPATCH_TASK_NOT_APPROVABLE','ORCHESTRATION_PROFILE_CHANGED','DISPATCH_EPOCH_CHANGED','DISPATCH_APPROVAL_ALREADY_EXISTS',
+        'EXECUTION_CONNECTION_NOT_READY','EXECUTION_MODEL_BINDING_INVALID','IDEMPOTENCY_CONFLICT'].includes(code);
         send(response,notFound?404:conflict?409:400,failure(code))}return}
     const recoveryAssessmentRoute=pathname.match(/^\/api\/organization\/tasks\/([^/]+)\/recovery-assessments$/);
     if(recoveryAssessmentRoute && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){

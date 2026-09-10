@@ -37,20 +37,24 @@ async function approved(value) {
   return created.task;
 }
 
-test('v7 migrates through v9 without changing existing registry data',async()=>{
+test('v7 migrates through v10 without changing existing registry data',async()=>{
   const value=await fixture();try{const file=join(value.root,'access.json'),before=JSON.parse(readFileSync(file,'utf8'));
     before.schema_version=7;for(const key of ['dispatch_epochs','dispatch_tasks','dispatch_approvals','dispatch_attempts','dispatch_idempotency'])delete before[key];
     writeFileSync(file,JSON.stringify(before));const migratedStore=createAccessStore(value.root),after=JSON.parse(readFileSync(file,'utf8'));
-    assert.equal(after.schema_version,9);assert.deepEqual(after.dispatch_recoveries,{});assert.equal(migratedStore.dispatchEpoch(value.organization_id),1);
+    assert.equal(after.schema_version,10);assert.deepEqual(after.dispatch_recoveries,{});assert.equal(migratedStore.dispatchEpoch(value.organization_id),1);
     assert.equal(migratedStore.models(value.organization_id).length,5);assert.deepEqual(await migratedStore.dispatchTasks(value.organization_id,now),[])
   }finally{clean(value)}});
 
 test('v8 approvals migrate without changing their historical digest',async()=>{
   const value=await fixture();try{await approved(value);const file=join(value.root,'access.json'),before=JSON.parse(readFileSync(file,'utf8')),
     digest=Object.values(before.dispatch_approvals)[0].approval_digest;before.schema_version=8;delete before.dispatch_recoveries;
-    for(const approval of Object.values(before.dispatch_approvals))delete approval.recovery_digest;writeFileSync(file,JSON.stringify(before));
-    const migrated=createAccessStore(value.root),after=JSON.parse(readFileSync(file,'utf8'));assert.equal(after.schema_version,9);
+    for(const connection of Object.values(before.provider_connections)){delete connection.config_digest;delete connection.adapter_version}
+    for(const approval of Object.values(before.dispatch_approvals)){delete approval.recovery_digest;delete approval.model_execution;delete approval.execution_bindings}
+    writeFileSync(file,JSON.stringify(before));
+    const migrated=createAccessStore(value.root),after=JSON.parse(readFileSync(file,'utf8'));assert.equal(after.schema_version,10);
     assert.equal(Object.values(after.dispatch_approvals)[0].approval_digest,digest);assert.equal(Object.values(after.dispatch_approvals)[0].recovery_digest,null);
+    assert.equal(Object.values(after.dispatch_approvals)[0].model_execution,false);assert.deepEqual(Object.values(after.dispatch_approvals)[0].execution_bindings,[]);
+    assert.equal(Object.values(after.provider_connections)[0].config_digest,null);
     assert.equal((await migrated.dispatchTasks(value.organization_id,now+1000))[0].status,'QUEUED')
   }finally{clean(value)}});
 
