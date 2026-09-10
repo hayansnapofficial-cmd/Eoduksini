@@ -8,7 +8,7 @@
 - owner/admin의 작업 승인 요청에 `model_execution: true`가 있어야 실행 binding이 만들어진다.
 - 실행 binding은 승인 시점의 connection config digest, Adapter version, Provider model ID와 배정 노드에 결속된다.
 - Agent는 claim 시 받은 binding을 로컬 `providers.json`과 다시 비교한다. 불일치하면 모델을 호출하거나 `started` event를 보내지 않는다.
-- Ollama endpoint와 모델 응답 원문은 고객 노드에만 남는다. 서버에는 endpoint, API key, 환경 변수, 원문 응답을 보내지 않는다.
+- Ollama endpoint와 모델 응답 plaintext는 고객 노드에서만 처리된다. 서버에는 endpoint, API key, 환경 변수 또는 plaintext를 보내지 않고, 후속 역할 전달이 필요하면 암호화된 artifact만 보관한다.
 - repository write, Git publication, database mutation, deployment와 shell command authority는 계속 false다.
 
 현재 실제 Adapter는 loopback HTTP Ollama 하나다. endpoint는 `127.0.0.1`과 명시적 포트만 허용하며 응답은 2 MiB, 결과 텍스트는 64 KiB, 호출은 100초로 제한한다. 자동 재시도와 자동 claim은 없다.
@@ -37,4 +37,4 @@ node agent/node-agent.mjs execute <absolute-agent-state-root> <idempotency-prefi
 
 ## 현재 한계
 
-역할 결과 원문을 다른 노드로 전달하는 artifact transport는 아직 없다. 후속 역할은 현재 objective와 선행 result/evidence digest만 받는다. 따라서 이 단계는 실제 단일 역할 모델 호출과 계측 폐회로를 입증하지만, 여러 노드가 결과 원문을 공유하는 완성형 오케스트레이션은 주장하지 않는다.
+역할 결과는 고객 관리 공통 transport key를 가진 다른 배정 노드로 암호화해 전달할 수 있다. 키 배포·회전과 대용량 영속 보관은 아직 고객 운영 경계이며, 자세한 계약은 [Tenant Artifact Transport](TENANT-ARTIFACT-TRANSPORT.md)에 있다.

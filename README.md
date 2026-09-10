@@ -78,7 +78,7 @@ M3의 사후 증거 연결, fixture 검증과 `m2` 전력 센서 가용성 점�
 
 M3는 exact 결과 digest에 독립 검수와 명시적 사용자 채택 사건을 결합할 수 있습니다. 가격과 전력 근거는 권한 있는 관측이 제공되기 전까지 미관측 상태로 유지합니다.
 
-Tenant Task Dispatch는 `Head → Planner → Coder → Reviewer → Validator` 중 선택한 역할을 고정 순서로 전달합니다. 생성과 승인은 분리되고, 첫 claim이 승인 activation receipt를 소비합니다. 모델 실행 승인은 고객 Agent의 Provider 설정 digest와 정확한 모델·노드에 결속되며, 현재 loopback Ollama 수직 Adapter가 결과 digest와 토큰 사용량을 원장에 기록합니다. 자세한 내용은 [Tenant Model Execution Bridge](docs/TENANT-MODEL-EXECUTION.md)에 있습니다. 120초 lease나 heartbeat가 불확실해지면 자동 재배정하지 않고 조직 epoch를 올려 `RECOVERY_REQUIRED`로 보존합니다. 수동 복구 계약은 [Tenant Dispatch 수동 복구 프로토콜](docs/TENANT-DISPATCH-RECOVERY.md)에 있습니다. 현재 v10 JSON 접근 저장소는 단일 프로세스 개발 구현이며 자동 복구나 분산 합의를 제공하지 않습니다.
+Tenant Task Dispatch는 `Head → Planner → Coder → Reviewer → Validator` 중 선택한 역할을 고정 순서로 전달합니다. 생성과 승인은 분리되고, 첫 claim이 승인 activation receipt를 소비합니다. 모델 실행 승인은 고객 Agent의 Provider 설정 digest와 정확한 모델·노드에 결속되며, 현재 loopback Ollama 수직 Adapter가 결과 digest와 토큰 사용량을 원장에 기록합니다. 고객 관리 transport key가 있는 노드들은 암호화된 역할 결과를 다음 배정 노드에 전달할 수 있습니다. 자세한 내용은 [Tenant Model Execution Bridge](docs/TENANT-MODEL-EXECUTION.md)와 [Tenant Artifact Transport](docs/TENANT-ARTIFACT-TRANSPORT.md)에 있습니다. 120초 lease나 heartbeat가 불확실해지면 자동 재배정하지 않고 조직 epoch를 올려 `RECOVERY_REQUIRED`로 보존합니다. 수동 복구 계약은 [Tenant Dispatch 수동 복구 프로토콜](docs/TENANT-DISPATCH-RECOVERY.md)에 있습니다. 현재 v11 JSON 접근 저장소는 단일 프로세스 개발 구현이며 자동 복구나 분산 합의를 제공하지 않습니다.
 
 [제품 아키텍처](docs/PRODUCT-ARCHITECTURE.md) · [소유권 경계](docs/BOUNDARY.md) · [웹 접근 설정](docs/WEB-ACCESS.md) · [로컬 Controller 운영](docs/LOCAL-CONTROLLER.md) · [Controller 계측](docs/CONTROLLER-METERING.md) · [V2 계획](docs/V2-DECISIONS.md) · [검증](docs/VERIFICATION.md)
 

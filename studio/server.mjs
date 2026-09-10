@@ -113,6 +113,17 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
       catch(error){const code=error?.message??'INVALID_PROVIDER_BINDING',unavailable=code==='AGENT_SERVICE_UNAVAILABLE',unauthorized=code==='INVALID_AGENT_CREDENTIAL',
         conflict=['PROVIDER_CONNECTION_BINDING_CONFLICT','IDEMPOTENCY_CONFLICT'].includes(code);send(response,unavailable?503:unauthorized?401:conflict?409:400,
           failure(unavailable?'AGENT_SERVICE_UNAVAILABLE':unauthorized?'INVALID_AGENT_CREDENTIAL':code))}return}
+    if(pathname==='/api/agent/artifacts'&&request.method==='POST'){try{if(!store)throw new Error('AGENT_SERVICE_UNAVAILABLE');const payload=await jsonBody(request,96*1024);
+      if(!exact(payload,['artifact','idempotency_key']))throw new Error('INVALID_ARTIFACT_UPLOAD');const node=store.authenticateNode(bearer(request));
+      send(response,200,json({schema_version:1,...await store.putDispatchArtifact({node_id:node.node_id,...payload})}))}
+      catch(error){const code=error?.message??'INVALID_ARTIFACT_UPLOAD',unavailable=code==='AGENT_SERVICE_UNAVAILABLE',unauthorized=code==='INVALID_AGENT_CREDENTIAL',
+        conflict=['ARTIFACT_STORE_FULL','ARTIFACT_ID_CONFLICT','IDEMPOTENCY_CONFLICT'].includes(code);send(response,unavailable?503:unauthorized?401:conflict?409:400,
+          failure(unavailable?'AGENT_SERVICE_UNAVAILABLE':unauthorized?'INVALID_AGENT_CREDENTIAL':code))}return}
+    const artifactRoute=pathname.match(/^\/api\/agent\/artifacts\/([^/]+)$/);
+    if(artifactRoute&&request.method==='GET'){try{if(!store)throw new Error('AGENT_SERVICE_UNAVAILABLE');const node=store.authenticateNode(bearer(request)),
+        artifact=store.dispatchArtifact({node_id:node.node_id,artifact_id:segment(artifactRoute[1])});send(response,200,json({schema_version:1,artifact}))}
+      catch(error){const code=error?.message??'ARTIFACT_NOT_AUTHORIZED',unavailable=code==='AGENT_SERVICE_UNAVAILABLE',unauthorized=code==='INVALID_AGENT_CREDENTIAL';
+        send(response,unavailable?503:unauthorized?401:403,failure(unavailable?'AGENT_SERVICE_UNAVAILABLE':unauthorized?'INVALID_AGENT_CREDENTIAL':code))}return}
     if(pathname==='/api/agent/tasks/claim' && request.method==='POST') {try{if(!store)throw new Error('AGENT_SERVICE_UNAVAILABLE');const payload=await jsonBody(request,1024);
       if(!exact(payload,['idempotency_key']))throw new Error('INVALID_DISPATCH_CLAIM');const node=store.authenticateNode(bearer(request));
       send(response,200,json(await store.claimDispatch({node_id:node.node_id,...payload})))}

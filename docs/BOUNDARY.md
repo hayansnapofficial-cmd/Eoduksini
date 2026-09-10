@@ -36,4 +36,4 @@ M1/M2 계측은 Controller가 직접 관측하거나 Provider Adapter가 검증�
 
 Agent event는 attempt ID, 단조 event sequence, 정확한 epoch, 120초 server-clock lease로 검사한다. lease 만료나 heartbeat 불확실성은 재시도·재배정 권한이 아니다. 해당 작업과 하위 역할을 `RECOVERY_REQUIRED`/`BLOCKED`로 보존하고 조직 dispatch epoch를 한 번 올린다. 수동 복구는 종료 확인 evidence digest assessment와 별도 일회성 승인을 요구하며 정확히 같은 역할만 새 epoch에서 연다. 자동 복구, 강제 unlock, 과거 성공 추정은 없다.
 
-Dispatch task의 authority는 기본적으로 모두 false다. owner/admin이 별도 승인에서 `model_execution`을 명시한 경우에만 서버가 배정 노드·모델·Provider 설정 digest에 고정된 실행 binding을 만든다. 고객 Agent의 현재 수직 Adapter는 loopback Ollama 모델 호출만 수행하며 명령 실행, 저장소 쓰기, Git 게시, 데이터베이스 변경과 배포를 허가하지 않는다. v10 JSON 접근 저장소는 한 프로세스의 직렬화된 개발 구현으로, 다중 호스트 트랜잭션·분산 합의·고가용성을 주장하지 않는다.
+Dispatch task의 authority는 기본적으로 모두 false다. owner/admin이 별도 승인에서 `model_execution`을 명시한 경우에만 서버가 배정 노드·모델·Provider 설정 digest에 고정된 실행 binding을 만든다. 고객 Agent의 현재 수직 Adapter는 loopback Ollama 모델 호출과 고객 키로 암호화된 역할 artifact 전달만 수행하며 명령 실행, 저장소 쓰기, Git 게시, 데이터베이스 변경과 배포를 허가하지 않는다. v11 JSON 접근 저장소는 한 프로세스의 직렬화된 개발 구현으로, 다중 호스트 트랜잭션·분산 합의·고가용성을 주장하지 않는다.
