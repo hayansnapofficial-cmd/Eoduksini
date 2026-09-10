@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { createDispatchTask, dispatchApproval, dispatchTaskDigest } from '../studio/task-dispatch.mjs';
+import { createDispatchTask, dispatchApproval, dispatchRecoveryAssessment, dispatchRecoveryApproval, dispatchTaskDigest,
+  prepareRecoveredDispatchTask } from '../studio/task-dispatch.mjs';
 
 const now=Date.UTC(2026,8,9,12),organization_id='org-42';
 const sha=value=>createHash('sha256').update(value).digest('hex');
@@ -54,4 +55,27 @@ test('approval binds the immutable task graph and uses exclusive expiry',()=>{
   assert.equal(approval.consumed_at,null);
   assert.match(approval.approval_digest,/^[0-9a-f]{64}$/);
   assert.throws(()=>dispatchApproval({approval_id:'A',task,approved_by:'319284410',ttl_ms:999,now}),/INVALID_DISPATCH_APPROVAL/);
+});
+
+test('manual recovery binds termination evidence to one failed attempt and a new epoch',()=>{
+  const task=createDispatchTask(input()),attempt={schema_version:1,attempt_id:'attempt-11111111-1111-4111-8111-111111111111',
+    organization_id,task_id:task.task_id,dispatch_id:'TASK-1:head',role:'head',node_id:'node-head',dispatch_epoch:1,
+    status:'RECOVERY_REQUIRED',recovery_reason:'LEASE_EXPIRED'};
+  task.status='RECOVERY_REQUIRED';task.dispatches[0].status='RECOVERY_REQUIRED';task.dispatches[0].attempt_id=attempt.attempt_id;
+  task.dispatches[0].recovery_reason='LEASE_EXPIRED';for(const item of task.dispatches.slice(1))item.status='BLOCKED';
+  const recovery=dispatchRecoveryAssessment({recovery_id:'RECOVERY-1',task,attempt,disposition:'RETRY_CONFIRMED_TERMINATED',
+    evidence_digest:sha('termination evidence'),verified_by:'319284410',target_dispatch_epoch:2,now});
+  assert.equal(recovery.attempt_id,attempt.attempt_id);assert.equal(recovery.previous_dispatch_epoch,1);
+  assert.equal(recovery.target_dispatch_epoch,2);assert.equal(recovery.recovery_reason,'LEASE_EXPIRED');
+  assert.match(recovery.recovery_digest,/^[0-9a-f]{64}$/);
+  const resumed=prepareRecoveredDispatchTask({task,recovery,now:now+1000});
+  assert.equal(resumed.dispatch_epoch,2);assert.equal(resumed.status,'AWAITING_RECOVERY_APPROVAL');
+  assert.equal(resumed.dispatches[0].status,'WAITING_RECOVERY_APPROVAL');assert.equal(resumed.dispatches[0].attempt_id,null);
+  assert.deepEqual(resumed.dispatches.slice(1).map(item=>item.status),['BLOCKED','BLOCKED','BLOCKED']);
+  const approval=dispatchRecoveryApproval({approval_id:'RECOVERY-APPROVAL-1',task:resumed,recovery,approved_by:'319284410',ttl_ms:60_000,now:now+2000});
+  assert.equal(approval.recovery_digest,recovery.recovery_digest);assert.equal(approval.dispatch_epoch,2);
+  assert.equal(approval.task_digest,resumed.task_digest);
+  assert.throws(()=>dispatchRecoveryAssessment({recovery_id:'RECOVERY-2',task,attempt:{...attempt,status:'RUNNING'},
+    disposition:'RETRY_CONFIRMED_TERMINATED',evidence_digest:sha('evidence'),verified_by:'319284410',target_dispatch_epoch:2,now}),
+  /RECOVERY_ATTEMPT_NOT_RECOVERABLE/);
 });

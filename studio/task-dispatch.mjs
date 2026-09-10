@@ -31,6 +31,8 @@ const immutableTask=value=>({schema_version:value.schema_version,organization_id
   dispatches:value.dispatches.map(immutableDispatch)});
 
 export const dispatchTaskDigest=task=>digest(immutableTask(inspect(task)));
+const approvalDigestInput=approval=>Object.fromEntries(Object.entries(approval).filter(([key,value])=>
+  !['consumed_at','activation_receipt'].includes(key)&&!(key==='recovery_digest'&&value===null)));
 
 export function createDispatchTask(input) {
   const value=inspect(input);exact(value,['organization_id','task_id','objective','profile_revision','roles','assignment','dispatch_epoch','created_by','now'],'INVALID_DISPATCH_TASK');
@@ -65,8 +67,65 @@ export function dispatchApproval(input) {
   const approval={schema_version:1,approval_id:value.approval_id,organization_id:value.task.organization_id,task_id:value.task.task_id,
     task_digest:value.task.task_digest,role_graph_digest:value.task.role_graph_digest,assignment_digest:value.task.assignment_digest,
     profile_revision:value.task.profile_revision,dispatch_epoch:value.task.dispatch_epoch,approved_by:value.approved_by,issued_at:value.now,
-    expires_at:value.now+value.ttl_ms,consumed_at:null,activation_receipt:null};
-  return {...approval,approval_digest:digest(Object.fromEntries(Object.entries(approval).filter(([key])=>!['consumed_at','activation_receipt'].includes(key))))};
+    expires_at:value.now+value.ttl_ms,recovery_digest:null,consumed_at:null,activation_receipt:null};
+  return {...approval,approval_digest:digest(approvalDigestInput(approval))};
+}
+
+const immutableRecovery=value=>({schema_version:value.schema_version,recovery_id:value.recovery_id,organization_id:value.organization_id,
+  task_id:value.task_id,dispatch_id:value.dispatch_id,role:value.role,attempt_id:value.attempt_id,task_digest:value.task_digest,
+  role_graph_digest:value.role_graph_digest,assignment_digest:value.assignment_digest,profile_revision:value.profile_revision,
+  previous_dispatch_epoch:value.previous_dispatch_epoch,target_dispatch_epoch:value.target_dispatch_epoch,recovery_reason:value.recovery_reason,
+  disposition:value.disposition,evidence_digest:value.evidence_digest,verified_by:value.verified_by,verified_at:value.verified_at});
+
+export const dispatchRecoveryDigest=recovery=>digest(immutableRecovery(inspect(recovery)));
+
+export function dispatchRecoveryAssessment(input) {
+  const value=inspect(input);exact(value,['recovery_id','task','attempt','disposition','evidence_digest','verified_by','target_dispatch_epoch','now'],
+    'INVALID_DISPATCH_RECOVERY');
+  const {task,attempt}=value,dispatch=task?.dispatches?.find(item=>item.dispatch_id===attempt?.dispatch_id);
+  check(safeText(value.recovery_id,128)&&HASH.test(value.evidence_digest)&&/^[1-9][0-9]{0,31}$/.test(value.verified_by)&&
+    Number.isSafeInteger(value.target_dispatch_epoch)&&Number.isSafeInteger(value.now)&&value.now>=0,'INVALID_DISPATCH_RECOVERY');
+  check(task?.task_digest===dispatchTaskDigest(task)&&task.status==='RECOVERY_REQUIRED','RECOVERY_TASK_NOT_RECOVERABLE');
+  check(attempt?.status==='RECOVERY_REQUIRED'&&safeText(attempt.attempt_id,128)&&attempt.organization_id===task.organization_id&&
+    attempt.task_id===task.task_id&&attempt.dispatch_epoch===task.dispatch_epoch&&dispatch?.attempt_id===attempt.attempt_id&&
+    dispatch.status==='RECOVERY_REQUIRED'&&dispatch.role===attempt.role&&dispatch.node_id===attempt.node_id&&
+    dispatch.recovery_reason===attempt.recovery_reason&&safeText(attempt.recovery_reason,256),'RECOVERY_ATTEMPT_NOT_RECOVERABLE');
+  check(value.disposition==='RETRY_CONFIRMED_TERMINATED','UNSUPPORTED_RECOVERY_DISPOSITION');
+  check(value.target_dispatch_epoch>task.dispatch_epoch,'RECOVERY_EPOCH_NOT_ADVANCED');
+  const recovery={schema_version:1,recovery_id:value.recovery_id,organization_id:task.organization_id,task_id:task.task_id,
+    dispatch_id:dispatch.dispatch_id,role:dispatch.role,attempt_id:attempt.attempt_id,task_digest:task.task_digest,
+    role_graph_digest:task.role_graph_digest,assignment_digest:task.assignment_digest,profile_revision:task.profile_revision,
+    previous_dispatch_epoch:task.dispatch_epoch,target_dispatch_epoch:value.target_dispatch_epoch,recovery_reason:attempt.recovery_reason,
+    disposition:value.disposition,evidence_digest:value.evidence_digest,verified_by:value.verified_by,verified_at:new Date(value.now).toISOString()};
+  return {...recovery,recovery_digest:dispatchRecoveryDigest(recovery)};
+}
+
+export function prepareRecoveredDispatchTask(input) {
+  const value=inspect(input);exact(value,['task','recovery','now'],'INVALID_DISPATCH_RECOVERY');const {task,recovery}=value;
+  check(Number.isSafeInteger(value.now)&&value.now>=0&&task?.task_digest===dispatchTaskDigest(task)&&task.status==='RECOVERY_REQUIRED'&&
+    recovery?.recovery_digest===dispatchRecoveryDigest(recovery)&&recovery.organization_id===task.organization_id&&recovery.task_id===task.task_id&&
+    recovery.task_digest===task.task_digest&&recovery.role_graph_digest===task.role_graph_digest&&recovery.assignment_digest===task.assignment_digest&&
+    recovery.profile_revision===task.profile_revision&&recovery.previous_dispatch_epoch===task.dispatch_epoch,'RECOVERY_BINDING_MISMATCH');
+  const resumed=structuredClone(task),dispatch=resumed.dispatches.find(item=>item.dispatch_id===recovery.dispatch_id);
+  check(dispatch?.attempt_id===recovery.attempt_id&&dispatch.status==='RECOVERY_REQUIRED','RECOVERY_BINDING_MISMATCH');
+  resumed.dispatch_epoch=recovery.target_dispatch_epoch;resumed.status='AWAITING_RECOVERY_APPROVAL';resumed.updated_at=new Date(value.now).toISOString();
+  dispatch.status='WAITING_RECOVERY_APPROVAL';dispatch.attempt_id=null;dispatch.recovery_reason=null;
+  resumed.task_digest=dispatchTaskDigest(resumed);return resumed;
+}
+
+export function dispatchRecoveryApproval(input) {
+  const value=inspect(input);exact(value,['approval_id','task','recovery','approved_by','ttl_ms','now'],'INVALID_DISPATCH_RECOVERY_APPROVAL');
+  check(safeText(value.approval_id,128)&&/^[1-9][0-9]{0,31}$/.test(value.approved_by)&&Number.isSafeInteger(value.ttl_ms)&&
+    value.ttl_ms>=1000&&value.ttl_ms<=3_600_000&&Number.isSafeInteger(value.now)&&value.now>=0&&
+    value.task?.task_digest===dispatchTaskDigest(value.task)&&value.task.status==='AWAITING_RECOVERY_APPROVAL'&&
+    value.recovery?.recovery_digest===dispatchRecoveryDigest(value.recovery)&&value.recovery.organization_id===value.task.organization_id&&
+    value.recovery.task_id===value.task.task_id&&value.recovery.target_dispatch_epoch===value.task.dispatch_epoch,
+  'INVALID_DISPATCH_RECOVERY_APPROVAL');
+  const approval={schema_version:1,approval_id:value.approval_id,organization_id:value.task.organization_id,task_id:value.task.task_id,
+    task_digest:value.task.task_digest,role_graph_digest:value.task.role_graph_digest,assignment_digest:value.task.assignment_digest,
+    profile_revision:value.task.profile_revision,dispatch_epoch:value.task.dispatch_epoch,approved_by:value.approved_by,issued_at:value.now,
+    expires_at:value.now+value.ttl_ms,recovery_digest:value.recovery.recovery_digest,consumed_at:null,activation_receipt:null};
+  return {...approval,approval_digest:digest(approvalDigestInput(approval))};
 }
 
 export function dispatchPublicTask(task,attempts=[]) {

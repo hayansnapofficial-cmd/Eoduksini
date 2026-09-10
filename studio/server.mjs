@@ -126,7 +126,7 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
       ['/api/snapshot','/api/organization','/api/checkout','/api/logout','/api/admin/summary','/api/admin/customers'].includes(pathname);
     const organizationApi=['/api/organization/providers','/api/organization/models','/api/organization/nodes','/api/organization/node-enrollments',
       '/api/organization/orchestration-profile','/api/organization/orchestration-assignment','/api/organization/tasks'].includes(pathname)||
-      /^\/api\/organization\/tasks\/[^/]+\/approve$/.test(pathname);
+      /^\/api\/organization\/tasks\/[^/]+\/(approve|recovery-assessments|recovery-approvals)$/.test(pathname);
     if((needsSession||organizationApi) && !session) {denied(request,response,'LOGIN_REQUIRED');return}
     if((adminAssets.has(pathname)||pathname.startsWith('/api/admin/')) && !session.admin) {denied(request,response,'ADMIN_REQUIRED');return}
     if((pathname==='/studio'||pathname==='/app.js'||pathname==='/settings'||pathname==='/settings.js'||pathname==='/settings.css'||pathname==='/api/snapshot'||organizationApi) && !session.entitlement.active) {denied(request,response,'SUBSCRIPTION_REQUIRED');return}
@@ -179,6 +179,26 @@ export function createStudioServer({stateRoot=null,snapshot=studioSnapshot,auth=
       catch(error){const code=error?.message??'INVALID_DISPATCH_APPROVAL',notFound=code==='DISPATCH_TASK_NOT_FOUND',conflict=['TASK_DIGEST_MISMATCH',
         'DISPATCH_TASK_NOT_APPROVABLE','ORCHESTRATION_PROFILE_CHANGED','DISPATCH_EPOCH_CHANGED','DISPATCH_APPROVAL_ALREADY_EXISTS','IDEMPOTENCY_CONFLICT'].includes(code);
         send(response,notFound?404:conflict?409:400,failure(code))}return}
+    const recoveryAssessmentRoute=pathname.match(/^\/api\/organization\/tasks\/([^/]+)\/recovery-assessments$/);
+    if(recoveryAssessmentRoute && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){
+      send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}try{const payload=await jsonBody(request,4096);
+        if(!exact(payload,['attempt_id','expected_task_digest','recovery_id','disposition','evidence_digest','idempotency_key']))
+          throw new Error('INVALID_DISPATCH_RECOVERY');const organization_id=session.organization.organization_id;
+        send(response,201,json({schema_version:1,...await store.assessDispatchRecovery({...payload,organization_id,
+          task_id:segment(recoveryAssessmentRoute[1]),verified_by:session.user.github_id})}))}
+      catch(error){const code=error?.message??'INVALID_DISPATCH_RECOVERY',notFound=code==='DISPATCH_TASK_NOT_FOUND',conflict=['TASK_DIGEST_MISMATCH',
+        'RECOVERY_TASK_NOT_RECOVERABLE','RECOVERY_ATTEMPT_NOT_RECOVERABLE','RECOVERY_EPOCH_NOT_ADVANCED','ORCHESTRATION_PROFILE_CHANGED',
+        'DISPATCH_RECOVERY_ALREADY_EXISTS','DISPATCH_ATTEMPT_ALREADY_ASSESSED','IDEMPOTENCY_CONFLICT'].includes(code);send(response,notFound?404:conflict?409:400,failure(code))}return}
+    const recoveryApprovalRoute=pathname.match(/^\/api\/organization\/tasks\/([^/]+)\/recovery-approvals$/);
+    if(recoveryApprovalRoute && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){
+      send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}try{const payload=await jsonBody(request,4096);
+        if(!exact(payload,['recovery_id','expected_recovery_digest','approval_id','ttl_ms','idempotency_key']))
+          throw new Error('INVALID_DISPATCH_RECOVERY_APPROVAL');const organization_id=session.organization.organization_id;
+        send(response,200,json({schema_version:1,...await store.approveDispatchRecovery({...payload,organization_id,
+          task_id:segment(recoveryApprovalRoute[1]),approved_by:session.user.github_id})}))}
+      catch(error){const code=error?.message??'INVALID_DISPATCH_RECOVERY_APPROVAL',notFound=['DISPATCH_TASK_NOT_FOUND','DISPATCH_RECOVERY_NOT_FOUND'].includes(code),
+        conflict=['RECOVERY_DIGEST_MISMATCH','DISPATCH_RECOVERY_NOT_APPROVABLE','ORCHESTRATION_PROFILE_CHANGED','DISPATCH_EPOCH_CHANGED',
+          'DISPATCH_APPROVAL_ALREADY_EXISTS','IDEMPOTENCY_CONFLICT'].includes(code);send(response,notFound?404:conflict?409:400,failure(code))}return}
     if(pathname==='/api/organization/node-enrollments' && request.method==='POST') {if(!['owner','admin'].includes(session.organization.role)){
       send(response,403,failure('ORGANIZATION_ADMIN_REQUIRED'));return}try{const payload=await jsonBody(request,1024);
         if(!exact(payload,['display_name']))throw new Error('INVALID_NODE_ENROLLMENT');send(response,200,json({schema_version:1,
