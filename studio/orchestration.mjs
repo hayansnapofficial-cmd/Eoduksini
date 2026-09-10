@@ -17,7 +17,8 @@ function candidates(role,{organizationId,connections,models,nodes,now}) {
     if(model.organization_id!==organizationId||model.status!=='active'||
       (!model.role_capabilities.includes(role)&&!model.role_capabilities.includes('general')))continue;
     const connection=connectionById.get(model.connection_id);if(!connection)continue;
-    for(const node of nodes)if(node.organization_id===organizationId&&online(node,now)&&node.adapters.includes(connection.provider_id))out.push({
+    for(const node of nodes)if(node.organization_id===organizationId&&online(node,now)&&node.adapters.includes(connection.provider_id)&&
+      (connection.status!=='ready'||connection.agent_id===node.node_id))out.push({
       model_id:model.model_id,node_id:node.node_id,provider_id:connection.provider_id,
       capability:model.role_capabilities.includes(role)?'exact':'general',cpu_logical:node.cpu_logical,memory_bytes:node.memory_bytes,
       node_last_seen_at:node.last_seen_at

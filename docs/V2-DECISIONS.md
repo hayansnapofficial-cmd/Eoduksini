@@ -82,3 +82,9 @@ This slice advances the access store to v9 and preserves historical v8 approval 
 Understood as: let an owner/admin explicitly add model-execution authority to a task approval only after every role's Provider connection has been bound by its assigned authenticated customer Agent. Bind the exact node, model, Provider model identifier, local configuration digest, Adapter version, task graph and epoch. The Agent must compare this binding with its private local configuration before reporting `started`, invoke only a bounded loopback Ollama Adapter, and return response/evidence digests with observed input/output tokens. Provider endpoint and response text do not enter the control-plane store.
 
 This slice advances the access store to v10. It proves one real model-call path but does not add raw artifact transport between roles, cloud Provider Adapters, shell execution, repository writes, Git/DB/deployment authority, automatic claim/retry or multi-instance persistence.
+
+## Encrypted Tenant Artifact Transport
+
+Role output plaintext remains on customer Agents. Agents sharing a customer-managed 32-byte transport key encrypt bounded UTF-8 output with AES-256-GCM; dispatch identity, attempt, epoch, key ID and plaintext commitment are authenticated metadata. The server persists only the ciphertext package and releases it solely to the exact claimed successor node.
+
+This slice advances the access store to v11 and proves a two-Agent `Head → Planner` relay. It does not provide customer KMS integration, key distribution or rotation, object storage, retention automation, large artifacts, cloud Provider Adapters or new repository/Git/DB/deployment authority.

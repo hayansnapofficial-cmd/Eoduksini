@@ -57,7 +57,7 @@ export function createDispatchTask(input) {
     check(source&&safeText(source.model_id)&&safeText(source.node_id)&&safeText(source.provider_id),'ASSIGNMENT_BINDING_MISMATCH');
     return {dispatch_id:`${value.task_id}:${role}`,role,index,model_id:source.model_id,node_id:source.node_id,provider_id:source.provider_id,
       predecessor_dispatch_id:index===0?null:`${value.task_id}:${ordered[index-1]}`,predecessor_result_digest:null,predecessor_evidence_digest:null,
-      status:index===0?'WAITING_APPROVAL':'WAITING_DEPENDENCY',attempt_id:null,recovery_reason:null}});
+      predecessor_artifact_id:null,status:index===0?'WAITING_APPROVAL':'WAITING_DEPENDENCY',attempt_id:null,recovery_reason:null}});
   const authority=Object.fromEntries(AUTHORITY_KEYS.map(key=>[key,false])),role_graph_digest=digest(dispatches.map(immutableDispatch));
   const task={schema_version:1,organization_id:value.organization_id,task_id:value.task_id,objective:value.objective,profile_revision:value.profile_revision,
     roles,assignment_digest:assignment.decision_digest,dispatch_epoch:value.dispatch_epoch,created_by:value.created_by,created_at,updated_at:created_at,

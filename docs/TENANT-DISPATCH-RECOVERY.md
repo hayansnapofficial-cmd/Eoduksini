@@ -23,4 +23,4 @@
 
 ## 저장 한계
 
-접근 저장소 v10은 단일 프로세스 JSON 직렬화 경계다. recovery record와 과거 attempt/approval을 보존하지만 분산 트랜잭션, 고가용성, 증거 원문 보관소 또는 외부 종료 검증기는 아니다.
+접근 저장소 v11은 단일 프로세스 JSON 직렬화 경계다. recovery record, 과거 attempt/approval과 제한된 encrypted artifact를 보존하지만 분산 트랜잭션, 고가용성, 증거 원문 보관소 또는 외부 종료 검증기는 아니다.

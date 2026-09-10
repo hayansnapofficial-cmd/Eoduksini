@@ -7,6 +7,7 @@ import { isProviderId } from '../studio/provider-catalog.mjs';
 import { digest as canonicalDigest } from '../core/contracts.mjs';
 import { executionPromptDigest, executionReceiptContract } from '../studio/model-execution.mjs';
 import { invokeConfiguredModel, ollamaConfig } from './model-runtime.mjs';
+import { decryptArtifact, encryptArtifact } from './artifact-crypto.mjs';
 
 const fail=reason=>{throw new Error(reason)};
 const origin=value=>{const url=new URL(value);if(url.origin!==value||!['http:','https:'].includes(url.protocol)||
@@ -28,6 +29,8 @@ const dispatchContext=value=>{if(!value||typeof value!=='object'||!value.envelop
   fail('INVALID_DISPATCH_RECEIPT');if(value.envelope.authority?.model_execution===true&&!value.envelope.execution_binding)fail('INVALID_DISPATCH_RECEIPT');return value};
 const agentPost=async(stateRoot,path,payload)=>{const value=load(stateFile(stateRoot));return request(value.origin+path,{method:'POST',
   headers:{Authorization:`Bearer ${value.agent_credential}`,'Content-Type':'application/json'},body:JSON.stringify(payload)})};
+const agentGet=async(stateRoot,path)=>{const value=load(stateFile(stateRoot));return request(value.origin+path,{method:'GET',
+  headers:{Authorization:`Bearer ${value.agent_credential}`}})};
 const withEnvelope=(prior,value)=>({...value,envelope:prior.envelope});
 const save=(file,value)=>{const existing=lstatSync(file,{throwIfNoEntry:false});if(existing)fail('AGENT_ALREADY_ENROLLED');const temporary=join(dirname(file),`.agent-${randomUUID()}.tmp`);
   writeFileSync(temporary,JSON.stringify(value,null,2)+'\n',{encoding:'utf8',mode:0o600,flag:'wx'});renameSync(temporary,file)};
@@ -55,6 +58,10 @@ export async function configureOllama(stateRoot,connectionId,endpoint,idempotenc
   if(existing&&existing.config_digest!==config_digest)fail('PROVIDER_CONFIG_ALREADY_EXISTS');providers.connections[connectionId]={...config,connection_id:connectionId,config_digest};
   if(!existing)saveProviders(stateRoot,providers);const result=await agentPost(stateRoot,`/api/agent/provider-connections/${encodeURIComponent(connectionId)}/ready`,{
     provider_id:'ollama',config_digest,adapter_version:config.adapter_version,idempotency_key:idempotencyKey});return result.connection}
+export async function uploadArtifact(stateRoot,artifact,idempotencyKey){if(!safeKey(idempotencyKey))fail('INVALID_ARTIFACT_IDEMPOTENCY_KEY');
+  return agentPost(stateRoot,'/api/agent/artifacts',{artifact,idempotency_key:idempotencyKey})}
+export async function fetchArtifact(stateRoot,artifactId){if(typeof artifactId!=='string'||!/^artifact-[0-9a-f]{64}$/.test(artifactId))fail('INVALID_ARTIFACT_ID');
+  return (await agentGet(stateRoot,`/api/agent/artifacts/${encodeURIComponent(artifactId)}`)).artifact}
 export async function claimDispatch(stateRoot,idempotencyKey){if(!safeKey(idempotencyKey))fail('INVALID_DISPATCH_IDEMPOTENCY_KEY');
   return dispatchContext(await agentPost(stateRoot,'/api/agent/tasks/claim',{idempotency_key:idempotencyKey}))}
 export async function startDispatch(stateRoot,receipt,idempotencyKey,observedAt=new Date().toISOString()){receipt=dispatchContext(receipt);
@@ -79,12 +86,16 @@ export async function executeDispatch(stateRoot,receipt,idempotencyPrefix,provid
     local=loadProviders(stateRoot).connections[binding.connection_id];if(!local||local.provider_id!==binding.provider_id||local.config_digest!==binding.config_digest||
       local.adapter_version!==binding.adapter_version)fail('EXECUTION_CONFIG_MISMATCH');const startedAt=new Date().toISOString();
   let current=await startDispatch(stateRoot,receipt,`${idempotencyPrefix}:start`,startedAt),result,status='SUCCEEDED',failure_reason=null;
-  try{result=await providerCall({config:local,binding,envelope:receipt.envelope})}catch(error){status='FAILED';failure_reason=String(error?.message??error).replace(/[^A-Z0-9_]/gi,'_').slice(0,128)||'PROVIDER_FAILED';
-    result={text:'',input_tokens:null,output_tokens:null,model_revision:null}}
+  try{const predecessor=receipt.envelope.predecessor_artifact_id===null?null:await fetchArtifact(stateRoot,receipt.envelope.predecessor_artifact_id),
+      predecessor_text=predecessor===null?null:decryptArtifact(predecessor);result=await providerCall({config:local,binding,envelope:receipt.envelope,predecessor_text});
+    const artifact=encryptArtifact(result.text,{...receipt.envelope,attempt_id:receipt.attempt.attempt_id}),uploaded=await uploadArtifact(stateRoot,artifact,
+      `${idempotencyPrefix}:artifact`);if(uploaded.plaintext_digest!==createHash('sha256').update(result.text).digest('hex'))fail('ARTIFACT_UPLOAD_MISMATCH');
+    result.artifact_id=uploaded.artifact_id}catch(error){status='FAILED';failure_reason=String(error?.message??error).replace(/[^A-Z0-9_]/gi,'_').slice(0,128)||'PROVIDER_FAILED';
+    result={text:'',input_tokens:null,output_tokens:null,model_revision:null,artifact_id:null}}
   const finishedAt=new Date().toISOString(),response_digest=createHash('sha256').update(result.text).digest('hex'),execution=executionReceiptContract({schema_version:1,
     organization_id:receipt.envelope.organization_id,task_id:receipt.envelope.task_id,dispatch_id:receipt.envelope.dispatch_id,
     attempt_id:receipt.attempt.attempt_id,dispatch_epoch:receipt.envelope.dispatch_epoch,activation_receipt:receipt.activation_receipt,binding,
-    prompt_digest:executionPromptDigest(receipt.envelope),response_digest,model_revision:result.model_revision,status,failure_reason,input_tokens:result.input_tokens,
+    prompt_digest:executionPromptDigest(receipt.envelope),response_digest,model_revision:result.model_revision,artifact_id:result.artifact_id,status,failure_reason,input_tokens:result.input_tokens,
     output_tokens:result.output_tokens,
     usage_status:status==='SUCCEEDED'?'OBSERVED':'MISSING',started_at:startedAt,finished_at:finishedAt});
   current=await finishDispatch(stateRoot,current,`${idempotencyPrefix}:finish`,status,response_digest,execution.evidence_digest,finishedAt,execution);
