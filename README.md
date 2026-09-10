@@ -25,7 +25,7 @@ npm run studio -- --state-root /absolute/path/to/controller-state
 
 Studio는 `http://127.0.0.1:4317`에서만 대기하며 Controller 상태, 작업 시도, Semantic 충돌·불확실성, M3 계측·경제성 집계를 표시합니다. 공개 웹과 GitHub 로그인·Core/Pro 페이앱 정기결제·내 계정·관리자 대시보드를 함께 제공합니다. 고객 조직은 Provider·Model, Node Agent, Head AI와 역할 Profile을 설정하고 정확한 Profile revision에 고정된 역할 배정 검사와 순차 Task Dispatch를 만들 수 있습니다. 서버가 검증한 활성 구독 사용자만 Studio에 들어갈 수 있고, 고급 계측·경제성은 Pro에만 제공됩니다. 서버 allowlist의 관리자 계정은 결제 상태와 무관하게 모든 기능에 무제한으로 접근합니다. 인증과 결제 설정은 [웹 접근 설정](docs/WEB-ACCESS.md)을 따릅니다.
 
-브라우저에 전체 Controller 저널이나 명령·환경·저장소 경로를 전달하지 않습니다. Tenant Dispatch의 승인은 별도 API와 digest로 결속되지만 모델·명령·저장소·Git·DB·배포 실행 권한을 만들지 않습니다. 인증 환경값 없이 `npm run studio`를 실행하면 공개 화면만 미리 볼 수 있습니다. 포트는 `--port 4318`처럼 바꿀 수 있습니다.
+브라우저에 전체 Controller 저널이나 명령·환경·저장소 경로를 전달하지 않습니다. Tenant Dispatch의 별도 승인에서 `model_execution`만 명시적으로 허용할 수 있으며 저장소·Git·DB·배포 권한은 만들지 않습니다. 인증 환경값 없이 `npm run studio`를 실행하면 공개 화면만 미리 볼 수 있습니다. 포트는 `--port 4318`처럼 바꿀 수 있습니다.
 
 프로젝트 등록과 읽기 전용 기준선 조사:
 
@@ -78,7 +78,7 @@ M3의 사후 증거 연결, fixture 검증과 `m2` 전력 센서 가용성 점�
 
 M3는 exact 결과 digest에 독립 검수와 명시적 사용자 채택 사건을 결합할 수 있습니다. 가격과 전력 근거는 권한 있는 관측이 제공되기 전까지 미관측 상태로 유지합니다.
 
-Tenant Task Dispatch는 `Head → Planner → Coder → Reviewer → Validator` 중 선택한 역할을 고정 순서로 전달합니다. 생성과 승인은 분리되고, 첫 Head claim이 단 한 번의 승인 activation receipt를 소비합니다. 각 성공 역할은 결과·증거 digest를 다음 역할에 결속합니다. 120초 lease나 heartbeat가 불확실해지면 자동 재배정하지 않고 조직 epoch를 올려 `RECOVERY_REQUIRED`로 보존합니다. 수동 복구는 종료 확인 증거 assessment와 별도 승인으로 나뉘며, 승인된 같은 역할 하나만 새 epoch에서 다시 엽니다. 자세한 계약은 [Tenant Dispatch 수동 복구 프로토콜](docs/TENANT-DISPATCH-RECOVERY.md)에 있습니다. 현재 v9 JSON 접근 저장소는 단일 프로세스 개발 구현이며 자동 복구나 분산 합의를 제공하지 않습니다.
+Tenant Task Dispatch는 `Head → Planner → Coder → Reviewer → Validator` 중 선택한 역할을 고정 순서로 전달합니다. 생성과 승인은 분리되고, 첫 claim이 승인 activation receipt를 소비합니다. 모델 실행 승인은 고객 Agent의 Provider 설정 digest와 정확한 모델·노드에 결속되며, 현재 loopback Ollama 수직 Adapter가 결과 digest와 토큰 사용량을 원장에 기록합니다. 자세한 내용은 [Tenant Model Execution Bridge](docs/TENANT-MODEL-EXECUTION.md)에 있습니다. 120초 lease나 heartbeat가 불확실해지면 자동 재배정하지 않고 조직 epoch를 올려 `RECOVERY_REQUIRED`로 보존합니다. 수동 복구 계약은 [Tenant Dispatch 수동 복구 프로토콜](docs/TENANT-DISPATCH-RECOVERY.md)에 있습니다. 현재 v10 JSON 접근 저장소는 단일 프로세스 개발 구현이며 자동 복구나 분산 합의를 제공하지 않습니다.
 
 [제품 아키텍처](docs/PRODUCT-ARCHITECTURE.md) · [소유권 경계](docs/BOUNDARY.md) · [웹 접근 설정](docs/WEB-ACCESS.md) · [로컬 Controller 운영](docs/LOCAL-CONTROLLER.md) · [Controller 계측](docs/CONTROLLER-METERING.md) · [V2 계획](docs/V2-DECISIONS.md) · [검증](docs/VERIFICATION.md)
 

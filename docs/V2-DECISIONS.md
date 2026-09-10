@@ -76,3 +76,9 @@ This slice advances the access store to v8 and remains a single-process developm
 Understood as: preserve the prior uncertainty fence, then permit only `RETRY_CONFIRMED_TERMINATED` after an owner/admin records a SHA-256 digest of independently inspected termination evidence for the exact failed attempt. Assessment and approval are separate idempotent transitions. The approval binds the immutable recovery digest and opens the same role only at the already-fenced organization epoch; its first claim consumes a new activation receipt. Expiry returns to explicit recovery reapproval and never authorizes a claim.
 
 This slice advances the access store to v9 and preserves historical v8 approval digests. It does not infer prior success, store raw evidence, skip roles, reassign nodes, force unlocks, verify an operating-system process itself, or add multi-instance consensus.
+
+## Tenant Model Execution Bridge vertical slice — 2026-09-10
+
+Understood as: let an owner/admin explicitly add model-execution authority to a task approval only after every role's Provider connection has been bound by its assigned authenticated customer Agent. Bind the exact node, model, Provider model identifier, local configuration digest, Adapter version, task graph and epoch. The Agent must compare this binding with its private local configuration before reporting `started`, invoke only a bounded loopback Ollama Adapter, and return response/evidence digests with observed input/output tokens. Provider endpoint and response text do not enter the control-plane store.
+
+This slice advances the access store to v10. It proves one real model-call path but does not add raw artifact transport between roles, cloud Provider Adapters, shell execution, repository writes, Git/DB/deployment authority, automatic claim/retry or multi-instance persistence.

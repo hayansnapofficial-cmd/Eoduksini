@@ -35,7 +35,9 @@ test('build replaces stale output recoverably and hashes actual artifact files',
   assert.equal(existsSync(join(bundle(dir),'adapters/third/project.json')),true);
   assert.equal(existsSync(join(bundle(dir),'packages/runtime-adapters/providers/ollama-worker.mjs')),true);
   assert.equal(existsSync(join(bundle(dir),'studio/public/index.html')),true);
+  assert.equal(existsSync(join(bundle(dir),'studio/model-execution.mjs')),true);
   assert.equal(existsSync(join(bundle(dir),'agent/node-agent.mjs')),true);
+  assert.equal(existsSync(join(bundle(dir),'agent/model-runtime.mjs')),true);
   const manifest=JSON.parse(readFileSync(join(bundle(dir),'artifact-manifest.json'),'utf8'));
   for(const file of manifest.files) assert.equal(createHash('sha256').update(readFileSync(join(bundle(dir),file.path))).digest('hex'),file.sha256);
   assert.equal(manifest.artifact_digest,report.artifact_digest);
