@@ -91,6 +91,16 @@ test('encrypted artifact moves from a Head Agent to a distinct Planner Agent',as
     assert.equal(current.attempts[0].execution_receipt.model_revision,H('head-revision'));
     assert.equal(current.attempts[0].execution_receipt.binding.node_id,enrolled.node_id);assert.equal(JSON.stringify(current).includes(providerOrigin),false);
     assert.equal(JSON.stringify(current).includes('HEAD_RESULT'),false);
+    const failedTask=(await post('/api/organization/tasks',{task_id:'TASK-EXEC-1B',objective:'Measure a completed model call when transport fails.',
+      profile_revision:profile.revision,roles:['planner'],idempotency_key:'create-transport-failure'}).then(value=>value.json())).task;
+    const failedApproval=await post('/api/organization/tasks/TASK-EXEC-1B/approve',{expected_task_digest:failedTask.task_digest,
+      approval_id:'APPROVAL-EXEC-2',ttl_ms:60_000,model_execution:true,idempotency_key:'approve-transport-failure'});
+    assert.equal(failedApproval.status,200);delete process.env.EODUKSINI_ARTIFACT_KEY;
+    const failed=await executeNextDispatch(agentRoot,'exec-transport-failure'),observed=failed.receipt.attempt.execution_receipt;
+    assert.equal(failed.status,'FAILED');assert.equal(observed.failure_reason,'ARTIFACT_TRANSPORT_FAILED');
+    assert.equal(observed.usage_status,'OBSERVED');assert.equal(observed.input_tokens,21);assert.equal(observed.output_tokens,4);
+    assert.equal(observed.model_revision,H('head-revision'));assert.equal(observed.response_digest,H('HEAD_RESULT'));
+    assert.equal(observed.artifact_id,null);assert.equal(failed.receipt.task.dispatches[1].status,'BLOCKED');assert.equal(prompts.length,3);
     process.env.EODUKSINI_AGENT_ADAPTERS='';await heartbeat(agentRoot);
     const [invalidated]=store.providerConnections(organization_id);assert.equal(invalidated.status,'pending_agent');assert.equal(invalidated.config_digest,null)
   }finally{if(priorAdapters===undefined)delete process.env.EODUKSINI_AGENT_ADAPTERS;else process.env.EODUKSINI_AGENT_ADAPTERS=priorAdapters;

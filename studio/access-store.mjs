@@ -102,10 +102,17 @@ function migrate(data) {
       status:value.status==='ready'?'pending_agent':value.status,agent_id:value.status==='ready'?null:value.agent_id,config_digest:null,adapter_version:null}])),
     dispatch_approvals:Object.fromEntries(Object.entries(data.dispatch_approvals??{}).map(([id,value])=>[id,{...value,model_execution:false,execution_bindings:[]}])),
     dispatch_attempts:Object.fromEntries(Object.entries(data.dispatch_attempts??{}).map(([id,value])=>[id,{...value,execution_receipt:null}]))};
-  if(data?.schema_version===10)data={...data,schema_version:11,dispatch_tasks:Object.fromEntries(Object.entries(data.dispatch_tasks??{}).map(([id,task])=>
-    [id,{...task,dispatches:task.dispatches.map(item=>({...item,predecessor_artifact_id:null}))}])),
-    dispatch_attempts:Object.fromEntries(Object.entries(data.dispatch_attempts??{}).map(([id,attempt])=>[id,{...attempt,
-      execution_receipt:attempt.execution_receipt===null?null:{...attempt.execution_receipt,artifact_id:null}}])),dispatch_artifacts:{}};
+  if(data?.schema_version===10){
+    const receipt=value=>value==null?null:{...value,artifact_id:null},attempt=value=>({...value,execution_receipt:receipt(value.execution_receipt)}),
+      task=value=>({...value,dispatches:value.dispatches.map(item=>({...item,predecessor_artifact_id:null})),
+        ...(Array.isArray(value.attempts)?{attempts:value.attempts.map(attempt)}:{})}),
+      response=value=>({...value,...(value.envelope?{envelope:{...value.envelope,predecessor_artifact_id:null}}:{}),
+        ...(value.attempt?{attempt:attempt(value.attempt)}:{}),...(value.task?{task:task(value.task)}:{})});
+    data={...data,schema_version:11,dispatch_tasks:Object.fromEntries(Object.entries(data.dispatch_tasks??{}).map(([id,value])=>[id,task(value)])),
+      dispatch_attempts:Object.fromEntries(Object.entries(data.dispatch_attempts??{}).map(([id,value])=>[id,attempt(value)])),
+      dispatch_idempotency:Object.fromEntries(Object.entries(data.dispatch_idempotency??{}).map(([id,value])=>[id,{...value,response:response(value.response)}])),
+      dispatch_artifacts:{}};
+  }
   return data;
 }
 
@@ -470,7 +477,9 @@ export function createAccessStore(root) {
       const response={connection:structuredClone(connection)};data.dispatch_idempotency[key]={scope,key:idempotency_key,request_digest,response:structuredClone(response)};return response})},
     putDispatchArtifact({node_id,artifact,idempotency_key,now=Date.now()}){return update(data=>{const node=data.nodes[node_id],value=artifactPackageContract(artifact),
         attempt=data.dispatch_attempts[value.producer_attempt_id],task=attempt&&data.dispatch_tasks[dispatchTaskKey(attempt.organization_id,attempt.task_id)];
-      check(node?.status==='active'&&safeKey(idempotency_key)&&Number.isSafeInteger(now)&&now>=0&&attempt?.node_id===node_id&&attempt.status==='RUNNING'&&
+      check(Number.isSafeInteger(now)&&now>=0&&onlineAt(node,now)&&safeKey(idempotency_key)&&attempt?.node_id===node_id&&attempt.status==='RUNNING'&&
+        attempt.lease_started_at<=now&&attempt.lease_expires_at>now&&data.dispatch_epochs[node.organization_id]===value.dispatch_epoch&&
+        data.dispatch_approvals[dispatchApprovalKey(attempt.organization_id,attempt.approval_id)]?.model_execution===true&&
         task?.dispatch_epoch===value.dispatch_epoch&&value.organization_id===node.organization_id&&value.organization_id===attempt.organization_id&&
         value.task_id===attempt.task_id&&value.producer_dispatch_id===attempt.dispatch_id&&value.dispatch_epoch===attempt.dispatch_epoch,
       'INVALID_ARTIFACT_UPLOAD');const request_digest=canonicalDigest(value),scope=`${node_id}:artifact-put`,key=idempotencyId(scope,idempotency_key),prior=data.dispatch_idempotency[key];
@@ -481,11 +490,14 @@ export function createAccessStore(root) {
       const response={artifact_id,plaintext_digest:value.plaintext_digest,ciphertext_digest:value.ciphertext_digest};
       data.dispatch_idempotency[key]={scope,key:idempotency_key,request_digest,response:structuredClone(response)};return response})},
     dispatchArtifact({node_id,artifact_id,now=Date.now()}){const data=load(),node=data.nodes[node_id],artifact=data.dispatch_artifacts[artifact_id];
-      check(node?.status==='active'&&Number.isSafeInteger(now)&&now>=0&&artifact?.organization_id===node.organization_id,'ARTIFACT_NOT_AUTHORIZED');
+      check(Number.isSafeInteger(now)&&now>=0&&onlineAt(node,now)&&artifact?.organization_id===node.organization_id,'ARTIFACT_NOT_AUTHORIZED');
       const consumer=Object.values(data.dispatch_tasks).filter(task=>task.organization_id===node.organization_id).flatMap(task=>task.dispatches.map(item=>({task,item})))
         .find(({item})=>item.node_id===node_id&&item.predecessor_artifact_id===artifact_id&&['CLAIMED','RUNNING'].includes(item.status));
-      const attempt=consumer&&data.dispatch_attempts[consumer.item.attempt_id];check(attempt?.node_id===node_id&&attempt.lease_expires_at>now&&
-        consumer.task.dispatch_epoch===data.dispatch_epochs[node.organization_id],'ARTIFACT_NOT_AUTHORIZED');return artifactPackageFromRecord(artifact)},
+      const attempt=consumer&&data.dispatch_attempts[consumer.item.attempt_id];check(attempt?.node_id===node_id&&['CLAIMED','RUNNING'].includes(attempt.status)&&
+        attempt.lease_started_at<=now&&attempt.lease_expires_at>now&&attempt.dispatch_epoch===consumer.task.dispatch_epoch&&
+        consumer.task.dispatch_epoch===data.dispatch_epochs[node.organization_id]&&
+        data.dispatch_approvals[dispatchApprovalKey(attempt.organization_id,attempt.approval_id)]?.model_execution===true,
+      'ARTIFACT_NOT_AUTHORIZED');return artifactPackageFromRecord(artifact)},
     createProviderConnection({organization_id,provider_id,display_name}){return update(data=>{check(validOrganizationId(organization_id)&&
       data.organizations[organization_id]&&isProviderId(provider_id)&&safeText(display_name,128)&&display_name.trim()===display_name,'INVALID_PROVIDER_CONNECTION');
       const existing=Object.values(data.provider_connections).find(value=>value.organization_id===organization_id&&value.provider_id===provider_id&&

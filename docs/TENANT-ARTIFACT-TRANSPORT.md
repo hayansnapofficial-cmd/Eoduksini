@@ -23,6 +23,8 @@ Agent는 무작위 96비트 IV와 AES-256-GCM을 사용한다. 인증 부가 데
 
 다른 조직, 생산 노드, 완료 전에 claim되지 않은 후속 노드와 lease가 끝난 attempt는 artifact를 조회할 수 없다. 서버 API와 task 조회 결과에는 plaintext가 나타나지 않는다.
 
+업로드와 다운로드는 현재 조직 epoch, 실행 lease, 온라인 heartbeat와 모델 실행 승인을 다시 검사한다. 모델 호출이 끝난 뒤 암호화나 업로드가 실패하면 작업은 실패로 기록하지만, 이미 관측한 토큰 수·모델 revision·결과 digest는 보존한다. v10에서 넘어온 기존 claim 응답도 새 필드로 정규화하며 과거 요청·증거 digest는 바꾸지 않는다.
+
 ## 현재 한계
 
 접근 저장소 v11은 최대 64개 encrypted artifact를 담는 단일 프로세스 개발 구현이다. 영속 object storage, retention/deletion 정책, 고객 KMS, key 배포·회전 절차, 멀티 인스턴스 트랜잭션과 대용량 artifact는 아직 제공하지 않는다. 현재 key는 고객이 모든 참여 노드에 안전하게 배포해야 한다.
