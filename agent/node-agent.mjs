@@ -85,19 +85,22 @@ export async function executeDispatch(stateRoot,receipt,idempotencyPrefix,provid
   if(!safeKey(idempotencyPrefix)||receipt.envelope.authority?.model_execution!==true)fail('MODEL_EXECUTION_NOT_AUTHORIZED');const binding=receipt.envelope.execution_binding,
     local=loadProviders(stateRoot).connections[binding.connection_id];if(!local||local.provider_id!==binding.provider_id||local.config_digest!==binding.config_digest||
       local.adapter_version!==binding.adapter_version)fail('EXECUTION_CONFIG_MISMATCH');const startedAt=new Date().toISOString();
-  let current=await startDispatch(stateRoot,receipt,`${idempotencyPrefix}:start`,startedAt),result,status='SUCCEEDED',failure_reason=null;
+  let current=await startDispatch(stateRoot,receipt,`${idempotencyPrefix}:start`,startedAt),result,status='SUCCEEDED',failure_reason=null,
+    usage_status='MISSING',stage='PREDECESSOR';
   try{const predecessor=receipt.envelope.predecessor_artifact_id===null?null:await fetchArtifact(stateRoot,receipt.envelope.predecessor_artifact_id),
-      predecessor_text=predecessor===null?null:decryptArtifact(predecessor);result=await providerCall({config:local,binding,envelope:receipt.envelope,predecessor_text});
+      predecessor_text=predecessor===null?null:decryptArtifact(predecessor);stage='MODEL';
+    result=await providerCall({config:local,binding,envelope:receipt.envelope,predecessor_text});usage_status='OBSERVED';stage='TRANSPORT';
     const artifact=encryptArtifact(result.text,{...receipt.envelope,attempt_id:receipt.attempt.attempt_id}),uploaded=await uploadArtifact(stateRoot,artifact,
       `${idempotencyPrefix}:artifact`);if(uploaded.plaintext_digest!==createHash('sha256').update(result.text).digest('hex'))fail('ARTIFACT_UPLOAD_MISMATCH');
-    result.artifact_id=uploaded.artifact_id}catch(error){status='FAILED';failure_reason=String(error?.message??error).replace(/[^A-Z0-9_]/gi,'_').slice(0,128)||'PROVIDER_FAILED';
-    result={text:'',input_tokens:null,output_tokens:null,model_revision:null,artifact_id:null}}
+    result.artifact_id=uploaded.artifact_id}catch(error){status='FAILED';
+    failure_reason=stage==='TRANSPORT'?'ARTIFACT_TRANSPORT_FAILED':String(error?.message??error).replace(/[^A-Z0-9_]/gi,'_').slice(0,128)||'PROVIDER_FAILED';
+    result=usage_status==='OBSERVED'?{...result,artifact_id:null}:{text:'',input_tokens:null,output_tokens:null,model_revision:null,artifact_id:null}}
   const finishedAt=new Date().toISOString(),response_digest=createHash('sha256').update(result.text).digest('hex'),execution=executionReceiptContract({schema_version:1,
     organization_id:receipt.envelope.organization_id,task_id:receipt.envelope.task_id,dispatch_id:receipt.envelope.dispatch_id,
     attempt_id:receipt.attempt.attempt_id,dispatch_epoch:receipt.envelope.dispatch_epoch,activation_receipt:receipt.activation_receipt,binding,
     prompt_digest:executionPromptDigest(receipt.envelope),response_digest,model_revision:result.model_revision,artifact_id:result.artifact_id,status,failure_reason,input_tokens:result.input_tokens,
     output_tokens:result.output_tokens,
-    usage_status:status==='SUCCEEDED'?'OBSERVED':'MISSING',started_at:startedAt,finished_at:finishedAt});
+    usage_status,started_at:startedAt,finished_at:finishedAt});
   current=await finishDispatch(stateRoot,current,`${idempotencyPrefix}:finish`,status,response_digest,execution.evidence_digest,finishedAt,execution);
   return {status,response_text:status==='SUCCEEDED'?result.text:null,receipt:current}}
 export async function executeNextDispatch(stateRoot,idempotencyPrefix,providerCall=invokeConfiguredModel){const receipt=await claimDispatch(stateRoot,`${idempotencyPrefix}:claim`);

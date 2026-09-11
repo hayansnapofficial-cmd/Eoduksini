@@ -60,8 +60,9 @@ export function executionReceiptContract(input) {
   value.binding=executionBindingContract(value.binding);
   if(value.status==='SUCCEEDED')check(value.failure_reason===null&&value.model_revision!==null&&value.usage_status==='OBSERVED'&&Number.isSafeInteger(value.input_tokens)&&
     value.input_tokens>=0&&Number.isSafeInteger(value.output_tokens)&&value.output_tokens>=0,'INVALID_EXECUTION_RECEIPT');
-  else check(safe(value.failure_reason,128)&&value.model_revision===null&&value.artifact_id===null&&value.usage_status==='MISSING'&&value.input_tokens===null&&
-    value.output_tokens===null,'INVALID_EXECUTION_RECEIPT');
+  else check(safe(value.failure_reason,128)&&value.artifact_id===null&&(value.usage_status==='OBSERVED'?
+    value.model_revision!==null&&Number.isSafeInteger(value.input_tokens)&&value.input_tokens>=0&&Number.isSafeInteger(value.output_tokens)&&value.output_tokens>=0:
+    value.model_revision===null&&value.input_tokens===null&&value.output_tokens===null),'INVALID_EXECUTION_RECEIPT');
   const evidence_digest=receiptEvidence(value);if(hasEvidence)check(value.evidence_digest===evidence_digest,'EXECUTION_EVIDENCE_MISMATCH');
   return {...value,evidence_digest};
 }
